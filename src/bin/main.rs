@@ -25,10 +25,15 @@
 )]
 
 use defmt;
+use embassy_executor::Spawner;
+use embassy_time;
 use esp_hal::clock::CpuClock;
-use esp_hal::main;
+use esp_hal::timer::systimer::SystemTimer;
 use esp_hal::uart::{Config, Uart};
+use esp_hal::Async;
 use esp_println as _;
+use heapless::Vec;
+
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}
@@ -38,11 +43,15 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[main]
-fn main() -> ! {
+#[esp_hal_embassy::main]
+async fn main(spawner: Spawner) {
     // Initialize the ESP32-C3 with maximum CPU clock speed
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
+
+    // Initialize embassy
+    let timer0 = SystemTimer::new(peripherals.SYSTIMER);
+    esp_hal_embassy::init(timer0.alarm0);
 
     // Configure GPIO pins for UART communication with GPS module
     // TX pin sends data to GPS (not used in this read-only example)
@@ -52,11 +61,23 @@ fn main() -> ! {
 
     // Configure UART with 9600 baud rate (standard for most GPS modules)
     let config = Config::default().with_baudrate(9600);
-    let mut uart = Uart::new(peripherals.UART1, config)
+    let uart = Uart::new(peripherals.UART1, config)
         .expect("UART initialization failed")
         .with_rx(rx_pin)
-        .with_tx(tx_pin);
+        .with_tx(tx_pin)
+        .into_async(); // Convert to async mode
 
+    // Spawn the GPS reading task
+    spawner.spawn(gps_task(uart)).unwrap();
+
+    // Keep the main task alive
+    loop {
+        embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn gps_task(mut uart: Uart<'static, Async>) {
     // Buffer to store incoming NMEA sentence bytes
     let mut sentence = [0u8; 128]; // 128 bytes should be enough for most NMEA sentences
     let mut idx = 0; // Current position in the sentence buffer
@@ -69,7 +90,7 @@ fn main() -> ! {
         // Read one byte at a time from the UART
         // GPS sends data at 9600 baud, which is about 960 characters per second
         let mut buffer = [0u8; 1]; // Single byte buffer for reading
-        match uart.read(&mut buffer) {
+        match uart.read_async(&mut buffer).await {
             Ok(_) => {
                 // Successfully read a byte from GPS module
                 let byte = buffer[0];
@@ -92,7 +113,28 @@ fn main() -> ! {
                         if let Ok(s) = core::str::from_utf8(&sentence[..idx]) {
                             // Print the complete NMEA sentence (trimmed of whitespace)
                             // Example output: "$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47"
-                            defmt::info!("{}", s.trim());
+                            // Parse and print extracted GPS data
+                            let sentence_str = s.trim();
+                            if sentence_str.starts_with("$GPGGA") {
+                                if let Some((lat, lon, sats)) = parse_gga(sentence_str) {
+                                    defmt::info!(
+                                        "Lat: {}, Lon: {}, Satellites: {}",
+                                        lat,
+                                        lon,
+                                        sats
+                                    );
+                                }
+                            } else if sentence_str.starts_with("$GPRMC") {
+                                if let Some((lat, lon, speed, heading)) = parse_rmc(sentence_str) {
+                                    defmt::info!(
+                                        "Lat: {}, Lon: {}, Speed: {} knots, Heading: {}°",
+                                        lat,
+                                        lon,
+                                        speed,
+                                        heading
+                                    );
+                                }
+                            }
                         }
                     }
                     // Reset buffer index to start collecting the next sentence
@@ -109,4 +151,61 @@ fn main() -> ! {
     }
 
     // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.0.0-rc.0/examples/src/bin
+}
+
+// Helper: Convert NMEA lat/lon to decimal degrees
+fn nmea_to_decimal(coord: &str, dir: &str) -> Option<f32> {
+    if coord.len() < 4 {
+        return None;
+    }
+    let (degrees, minutes) = if coord.contains('.') {
+        let split = coord.find('.')?;
+        let deg_len = split - 2;
+        let degrees = &coord[..deg_len];
+        let minutes = &coord[deg_len..];
+        (degrees, minutes)
+    } else {
+        let deg_len = coord.len() - 2;
+        let degrees = &coord[..deg_len];
+        let minutes = &coord[deg_len..];
+        (degrees, minutes)
+    };
+    let deg: f32 = degrees.parse().ok()?;
+    let min: f32 = minutes.parse().ok()?;
+    let mut val = deg + (min / 60.0);
+    if dir == "S" || dir == "W" {
+        val = -val;
+    }
+    Some(val)
+}
+
+// Parse $GPGGA sentence: lat, lon, satellites
+fn parse_gga(sentence: &str) -> Option<(f32, f32, u8)> {
+    let mut fields: Vec<&str, 16> = Vec::new();
+    for field in sentence.split(',') {
+        let _ = fields.push(field);
+    }
+    if fields.len() < 8 {
+        return None;
+    }
+    let lat = nmea_to_decimal(fields[2], fields[3])?;
+    let lon = nmea_to_decimal(fields[4], fields[5])?;
+    let sats: u8 = fields[7].parse().ok()?;
+    Some((lat, lon, sats))
+}
+
+// Parse $GPRMC sentence: lat, lon, speed, heading
+fn parse_rmc(sentence: &str) -> Option<(f32, f32, f32, f32)> {
+    let mut fields: Vec<&str, 16> = Vec::new();
+    for field in sentence.split(',') {
+        let _ = fields.push(field);
+    }
+    if fields.len() < 9 {
+        return None;
+    }
+    let lat = nmea_to_decimal(fields[3], fields[4])?;
+    let lon = nmea_to_decimal(fields[5], fields[6])?;
+    let speed: f32 = fields[7].parse().ok()?; // knots
+    let heading: f32 = fields[8].parse().ok()?; // degrees
+    Some((lat, lon, speed, heading))
 }

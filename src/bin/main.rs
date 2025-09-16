@@ -1,159 +1,256 @@
 /*
- * GPS NMEA Sentence Reader for ESP32-C3
+ * GPS NMEA Sentence Reader with OLED Display for ESP32-C3
  *
- * This program reads NMEA sentences from a GPS module via UART and displays them.
- * NMEA (National Marine Electronics Association) sentences are standardized GPS data
- * messages that contain location, time, and satellite information.
- *
- * How it works:
- * 1. GPS module sends continuous stream of NMEA sentences via UART
- * 2. Each sentence is a line of text ending with \r\n (carriage return + newline)
- * 3. We read bytes one at a time and buffer them until we find a line ending
- * 4. When a complete sentence is received, we convert it to a string and print it
- *
- * Example NMEA sentences:
- * $GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47
- * $GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A
+ * This program reads NMEA sentences from a GPS module via UART and displays
+ * the GPS coordinates and satellite count on an OLED screen.
  */
 
 #![no_std]
 #![no_main]
-#![deny(
-    clippy::mem_forget,
-    reason = "mem::forget is generally not safe to do with esp_hal types, especially those \
-    holding buffers for the duration of a data transfer."
-)]
 
+use core::fmt::Write;
 use defmt;
 use embassy_executor::Spawner;
-use embassy_time;
+use embassy_sync::mutex::Mutex;
+use embassy_time::{Duration, Timer};
+use embedded_graphics::mono_font::ascii::FONT_9X15;
+use embedded_graphics::mono_font::MonoTextStyle;
+use embedded_graphics::pixelcolor::BinaryColor;
+use embedded_graphics::prelude::*;
+use embedded_graphics::text::{Baseline, Text};
 use esp_hal::clock::CpuClock;
-use esp_hal::timer::systimer::SystemTimer;
+use esp_hal::timer::timg::TimerGroup;
 use esp_hal::uart::{Config, Uart};
-use esp_hal::Async;
+use esp_hal::{time::Rate, Async};
 use esp_println as _;
-use heapless::Vec;
+use heapless::{String, Vec};
+use ssd1306::mode::DisplayConfigAsync;
+use ssd1306::{
+    prelude::DisplayRotation, size::DisplaySize128x64, I2CDisplayInterface, Ssd1306Async,
+};
+use static_cell::StaticCell;
+
+// Shared GPS data structure
+#[derive(Clone, Copy)]
+struct GpsData {
+    lat: f32,
+    lon: f32,
+    satellites: u8,
+    speed: f32,   // Speed in knots
+    heading: f32, // Heading in degrees
+    valid: bool,
+}
+
+impl Default for GpsData {
+    fn default() -> Self {
+        Self {
+            lat: 0.0,
+            lon: 0.0,
+            satellites: 0,
+            speed: 0.0,
+            heading: 0.0,
+            valid: false,
+        }
+    }
+}
+
+// Global shared GPS data - use a reference that gets initialized
+static GPS_DATA_CELL: StaticCell<
+    Mutex<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, GpsData>,
+> = StaticCell::new();
+static mut GPS_DATA_REF: Option<
+    &'static Mutex<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, GpsData>,
+> = None;
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
-// This creates a default app-descriptor required by the esp-idf bootloader.
-// For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
-    // Initialize the ESP32-C3 with maximum CPU clock speed
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    // Initialize embassy
-    let timer0 = SystemTimer::new(peripherals.SYSTIMER);
-    esp_hal_embassy::init(timer0.alarm0);
+    let timer0 = TimerGroup::new(peripherals.TIMG1);
+    esp_hal_embassy::init(timer0.timer0);
 
-    // Configure GPIO pins for UART communication with GPS module
-    // TX pin sends data to GPS (not used in this read-only example)
-    // RX pin receives NMEA sentences from GPS
-    let tx_pin = peripherals.GPIO4; // Connect to GPS RX pin
-    let rx_pin = peripherals.GPIO5; // Connect to GPS TX pin
+    // Initialize shared GPS data
+    let gps_data_mutex = Mutex::new(GpsData::default());
+    let gps_data_ref = GPS_DATA_CELL.init(gps_data_mutex);
+    unsafe {
+        GPS_DATA_REF = Some(gps_data_ref);
+    }
 
-    // Configure UART with 9600 baud rate (standard for most GPS modules)
+    // Configure UART for GPS
+    let tx_pin = peripherals.GPIO4;
+    let rx_pin = peripherals.GPIO5;
     let config = Config::default().with_baudrate(9600);
     let uart = Uart::new(peripherals.UART1, config)
         .expect("UART initialization failed")
         .with_rx(rx_pin)
         .with_tx(tx_pin)
-        .into_async(); // Convert to async mode
+        .into_async();
 
-    // Spawn the GPS reading task
+    // Configure I2C for OLED
+    let i2c_bus = esp_hal::i2c::master::I2c::new(
+        peripherals.I2C0,
+        esp_hal::i2c::master::Config::default().with_frequency(Rate::from_khz(400)),
+    )
+    .unwrap()
+    .with_scl(peripherals.GPIO9)
+    .with_sda(peripherals.GPIO6)
+    .into_async();
+
+    let interface = I2CDisplayInterface::new(i2c_bus);
+    let mut display = Ssd1306Async::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
+        .into_buffered_graphics_mode();
+    display.init().await.unwrap();
+
+    // Spawn tasks
     spawner.spawn(gps_task(uart)).unwrap();
+    spawner.spawn(display_task(display)).unwrap();
 
-    // Keep the main task alive
     loop {
-        embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
+        Timer::after(Duration::from_secs(1)).await;
     }
 }
 
 #[embassy_executor::task]
 async fn gps_task(mut uart: Uart<'static, Async>) {
-    // Buffer to store incoming NMEA sentence bytes
-    let mut sentence = [0u8; 128]; // 128 bytes should be enough for most NMEA sentences
-    let mut idx = 0; // Current position in the sentence buffer
+    let mut sentence = [0u8; 128];
+    let mut idx = 0;
 
-    // Main loop: continuously read and parse GPS data
-    // GPS modules send a continuous stream of NMEA sentences like:
-    // "$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47\r\n"
-    // We need to read this character by character and assemble complete sentences
     loop {
-        // Read one byte at a time from the UART
-        // GPS sends data at 9600 baud, which is about 960 characters per second
-        let mut buffer = [0u8; 1]; // Single byte buffer for reading
+        let mut buffer = [0u8; 1];
         match uart.read_async(&mut buffer).await {
             Ok(_) => {
-                // Successfully read a byte from GPS module
                 let byte = buffer[0];
-
-                // Store the byte in our sentence buffer if there's space
-                // We're building up the sentence character by character
                 if idx < sentence.len() {
                     sentence[idx] = byte;
                     idx += 1;
                 }
 
-                // Check if we've reached the end of an NMEA sentence
-                // NMEA sentences end with \r\n (carriage return + newline)
-                // or if our buffer is full (safety check)
                 if byte == b'\n' || byte == b'\r' || idx == sentence.len() {
-                    // Only process sentences that contain actual data (more than just newline)
                     if idx > 1 {
-                        // Convert the byte array to a UTF-8 string
-                        // This handles the conversion from raw bytes to readable text
                         if let Ok(s) = core::str::from_utf8(&sentence[..idx]) {
-                            // Print the complete NMEA sentence (trimmed of whitespace)
-                            // Example output: "$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47"
-                            // Parse and print extracted GPS data
                             let sentence_str = s.trim();
                             if sentence_str.starts_with("$GPGGA") {
                                 if let Some((lat, lon, sats)) = parse_gga(sentence_str) {
-                                    defmt::info!(
-                                        "Lat: {}, Lon: {}, Satellites: {}",
-                                        lat,
-                                        lon,
-                                        sats
-                                    );
+                                    defmt::info!("GPGGA: Lat {}, Lon {}, Sats {}", lat, lon, sats);
+                                    let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
+                                    let mut gps_data = gps_ref.lock().await;
+                                    gps_data.lat = lat;
+                                    gps_data.lon = lon;
+                                    gps_data.satellites = sats;
+                                    gps_data.valid = true;
+                                    // Note: speed and heading are preserved from previous GPRMC
                                 }
                             } else if sentence_str.starts_with("$GPRMC") {
                                 if let Some((lat, lon, speed, heading)) = parse_rmc(sentence_str) {
                                     defmt::info!(
-                                        "Lat: {}, Lon: {}, Speed: {} knots, Heading: {}°",
+                                        "GPRMC: Lat {}, Lon {}, Speed {} knots, Heading {}°",
                                         lat,
                                         lon,
                                         speed,
                                         heading
                                     );
+                                    let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
+                                    let mut gps_data = gps_ref.lock().await;
+                                    gps_data.lat = lat;
+                                    gps_data.lon = lon;
+                                    gps_data.speed = speed;
+                                    gps_data.heading = heading;
+                                    gps_data.valid = true;
+                                    // Note: satellites count is preserved from previous GPGGA
                                 }
                             }
                         }
                     }
-                    // Reset buffer index to start collecting the next sentence
-                    // This prepares us to receive the next NMEA sentence
                     idx = 0;
                 }
             }
             Err(e) => {
-                // Handle UART errors (signal glitches, framing errors, etc.)
-                // These can occur due to electrical interference or baud rate mismatches
                 defmt::error!("UART error: {:?}", e);
             }
         }
     }
-
-    // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.0.0-rc.0/examples/src/bin
 }
 
-// Helper: Convert NMEA lat/lon to decimal degrees
+#[embassy_executor::task]
+async fn display_task(
+    mut display: Ssd1306Async<
+        ssd1306::prelude::I2CInterface<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
+        DisplaySize128x64,
+        ssd1306::mode::BufferedGraphicsModeAsync<DisplaySize128x64>,
+    >,
+) {
+    loop {
+        display.clear(BinaryColor::Off).unwrap();
+
+        let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
+        let gps_data = gps_ref.lock().await;
+        let data_copy = *gps_data;
+        drop(gps_data);
+
+        draw_gps_ui(&mut display, &data_copy).unwrap();
+        display.flush().await.unwrap();
+
+        Timer::after(Duration::from_secs(1)).await;
+    }
+}
+
+fn draw_gps_ui<D>(display: &mut D, gps: &GpsData) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = BinaryColor>,
+{
+    let text_style = MonoTextStyle::new(&FONT_9X15, BinaryColor::On);
+
+    if gps.valid {
+        // Line 1: Latitude (increased precision to show GPS changes)
+        let mut lat_str: String<32> = String::new();
+        write!(lat_str, "Lat: {:.6}", gps.lat).unwrap();
+        Text::with_baseline(&lat_str, Point::new(0, 0), text_style, Baseline::Top).draw(display)?;
+
+        // Line 2: Longitude (increased precision to show GPS changes)
+        let mut lon_str: String<32> = String::new();
+        write!(lon_str, "Lon: {:.6}", gps.lon).unwrap();
+        Text::with_baseline(&lon_str, Point::new(0, 16), text_style, Baseline::Top)
+            .draw(display)?;
+
+        // Line 3: Satellites and Speed
+        let mut sat_speed_str: String<32> = String::new();
+        write!(
+            sat_speed_str,
+            "Sats:{} Spd:{:.1}kt",
+            gps.satellites, gps.speed
+        )
+        .unwrap();
+        Text::with_baseline(&sat_speed_str, Point::new(0, 32), text_style, Baseline::Top)
+            .draw(display)?;
+
+        // Line 4: Heading
+        let mut heading_str: String<32> = String::new();
+        write!(heading_str, "Heading: {:.1}°", gps.heading).unwrap();
+        Text::with_baseline(&heading_str, Point::new(0, 48), text_style, Baseline::Top)
+            .draw(display)?;
+    } else {
+        Text::with_baseline(
+            "Waiting for GPS",
+            Point::new(0, 16),
+            text_style,
+            Baseline::Top,
+        )
+        .draw(display)?;
+        Text::with_baseline("fix...", Point::new(0, 32), text_style, Baseline::Top)
+            .draw(display)?;
+    }
+
+    Ok(())
+}
+
 fn nmea_to_decimal(coord: &str, dir: &str) -> Option<f32> {
     if coord.len() < 4 {
         return None;
@@ -179,7 +276,6 @@ fn nmea_to_decimal(coord: &str, dir: &str) -> Option<f32> {
     Some(val)
 }
 
-// Parse $GPGGA sentence: lat, lon, satellites
 fn parse_gga(sentence: &str) -> Option<(f32, f32, u8)> {
     let mut fields: Vec<&str, 16> = Vec::new();
     for field in sentence.split(',') {

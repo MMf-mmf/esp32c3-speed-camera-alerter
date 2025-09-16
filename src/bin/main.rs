@@ -209,31 +209,26 @@ where
     let text_style = MonoTextStyle::new(&FONT_9X15, BinaryColor::On);
 
     if gps.valid {
-        // Line 1: Latitude (increased precision to show GPS changes)
-        let mut lat_str: String<32> = String::new();
-        write!(lat_str, "Lat: {:.6}", gps.lat).unwrap();
+        // Line 1: Latitude - max 14 chars: "Lat:12.34567"
+        let mut lat_str: String<16> = String::new();
+        write!(lat_str, "Lat:{:.5}", gps.lat).unwrap();
         Text::with_baseline(&lat_str, Point::new(0, 0), text_style, Baseline::Top).draw(display)?;
 
-        // Line 2: Longitude (increased precision to show GPS changes)
-        let mut lon_str: String<32> = String::new();
-        write!(lon_str, "Lon: {:.6}", gps.lon).unwrap();
+        // Line 2: Longitude - max 14 chars: "Lon:123.45678"
+        let mut lon_str: String<16> = String::new();
+        write!(lon_str, "Lon:{:.5}", gps.lon).unwrap();
         Text::with_baseline(&lon_str, Point::new(0, 16), text_style, Baseline::Top)
             .draw(display)?;
 
-        // Line 3: Satellites and Speed
-        let mut sat_speed_str: String<32> = String::new();
-        write!(
-            sat_speed_str,
-            "Sats:{} Spd:{:.1}kt",
-            gps.satellites, gps.speed
-        )
-        .unwrap();
+        // Line 3: Satellites and Speed - max 14 chars: "Sat:12 Spd:3.4"
+        let mut sat_speed_str: String<16> = String::new();
+        write!(sat_speed_str, "Sat:{} Spd:{:.1}", gps.satellites, gps.speed).unwrap();
         Text::with_baseline(&sat_speed_str, Point::new(0, 32), text_style, Baseline::Top)
             .draw(display)?;
 
-        // Line 4: Heading
-        let mut heading_str: String<32> = String::new();
-        write!(heading_str, "Heading: {:.1}°", gps.heading).unwrap();
+        // Line 4: Heading - max 14 chars: "Hd:123.4d"
+        let mut heading_str: String<16> = String::new();
+        write!(heading_str, "Hd:{:.1}d", gps.heading).unwrap();
         Text::with_baseline(&heading_str, Point::new(0, 48), text_style, Baseline::Top)
             .draw(display)?;
     } else {

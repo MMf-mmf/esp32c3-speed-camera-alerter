@@ -7,7 +7,7 @@
 
 #![no_std]
 #![no_main]
-
+use core::f64::consts::PI;
 use core::fmt::Write;
 use defmt;
 use embassy_executor::Spawner;
@@ -24,6 +24,7 @@ use esp_hal::uart::{Config, Uart};
 use esp_hal::{time::Rate, Async};
 use esp_println as _;
 use heapless::{String, Vec};
+use libm::{atan2, cos, sin, sqrt};
 use ssd1306::mode::DisplayConfigAsync;
 use ssd1306::{
     prelude::DisplayRotation, size::DisplaySize128x64, I2CDisplayInterface, Ssd1306Async,
@@ -299,4 +300,74 @@ fn parse_rmc(sentence: &str) -> Option<(f32, f32, f32, f32)> {
     let speed: f32 = fields[7].parse().ok()?; // knots
     let heading: f32 = fields[8].parse().ok()?; // degrees
     Some((lat, lon, speed, heading))
+}
+
+// Helper function to convert degrees to radians, as .to_radians() is not available
+#[inline]
+fn deg_to_rad(deg: f64) -> f64 {
+    deg * (PI / 180.0)
+}
+
+// Helper function to convert radians to degrees, as .to_degrees() is not available
+#[inline]
+fn rad_to_deg(rad: f64) -> f64 {
+    rad * (180.0 / PI)
+}
+
+/// Calculates the great-circle distance between two points in a no_std environment.
+///
+/// # Arguments
+/// * `lat1`, `lon1`: Latitude and longitude of the first point (in decimal degrees).
+/// * `lat2`, `lon2`: Latitude and longitude of the second point (in decimal degrees).
+///
+/// # Returns
+/// The distance in kilometers.
+pub fn calculate_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    // Earth's radius in kilometers
+    const R: f64 = 6371.0;
+
+    // Convert coordinates from degrees to radians using our helper
+    let lat1_rad = deg_to_rad(lat1);
+    let lon1_rad = deg_to_rad(lon1);
+    let lat2_rad = deg_to_rad(lat2);
+    let lon2_rad = deg_to_rad(lon2);
+
+    // Differences in coordinates
+    let dlon = lon2_rad - lon1_rad;
+    let dlat = lat2_rad - lat1_rad;
+
+    // Haversine formula using libm functions
+    let a = sin(dlat / 2.0).powi(2) + cos(lat1_rad) * cos(lat2_rad) * sin(dlon / 2.0).powi(2);
+    let c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
+
+    R * c
+}
+
+/// Calculates the initial heading (bearing) in a no_std environment.
+///
+/// # Arguments
+/// * `lat1`, `lon1`: Latitude and longitude of the first point (in decimal degrees).
+/// * `lat2`, `lon2`: Latitude and longitude of the second point (in decimal degrees).
+///
+/// # Returns
+/// The initial heading in degrees (0-360).
+pub fn calculate_heading(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    // Convert coordinates from degrees to radians
+    let lat1_rad = deg_to_rad(lat1);
+    let lon1_rad = deg_to_rad(lon1);
+    let lat2_rad = deg_to_rad(lat2);
+    let lon2_rad = deg_to_rad(lon2);
+
+    // Difference in longitude
+    let dlon = lon2_rad - lon1_rad;
+
+    // Formula for bearing using libm functions
+    let y = sin(dlon) * cos(lat2_rad);
+    let x = cos(lat1_rad) * sin(lat2_rad) - sin(lat1_rad) * cos(lat2_rad) * cos(dlon);
+
+    let initial_bearing_rad = atan2(y, x);
+
+    // Convert from radians to degrees and normalize
+    let initial_bearing_deg = rad_to_deg(initial_bearing_rad);
+    (initial_bearing_deg + 360.0) % 360.0
 }

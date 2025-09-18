@@ -24,7 +24,7 @@ ssd1306 = { git = "https://github.com/rust-embedded-community/ssd1306.git", rev 
     "async",
 ] }
 embedded-graphics = "0.8.1"
-
+libm = "0.2.8"
 # Embassy dependencies
 embassy-executor = { version = "0.7.0", features = ["task-arena-size-20480"] }
 embassy-time     = "0.4.0"

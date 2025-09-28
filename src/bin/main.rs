@@ -337,7 +337,11 @@ pub fn calculate_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let dlat = lat2_rad - lat1_rad;
 
     // Haversine formula using libm functions
-    let a = sin(dlat / 2.0).powi(2) + cos(lat1_rad) * cos(lat2_rad) * sin(dlon / 2.0).powi(2);
+    let sin_dlat_half = sin(dlat / 2.0);
+    let sin_dlon_half = sin(dlon / 2.0);
+    let a = sin_dlat_half * sin_dlat_half
+        + cos(lat1_rad) * cos(lat2_rad) * sin_dlon_half * sin_dlon_half;
+
     let c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
 
     R * c

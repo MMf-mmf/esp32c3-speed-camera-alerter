@@ -1,12 +1,12 @@
-/*
- * GPS NMEA Sentence Reader with OLED Display for ESP32-C3
- *
- * This program reads NMEA sentences from a GPS module via UART and displays
- * the GPS coordinates and satellite count on an OLED screen.
- */
-
 #![no_std]
 #![no_main]
+
+extern crate alloc;
+
+// We bring the allocator into scope here.
+use esp_alloc as _;
+
+use alloc::vec::Vec as AllocVec;
 use core::f64::consts::PI;
 use core::fmt::Write;
 use defmt;
@@ -23,7 +23,9 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_hal::uart::{Config, Uart};
 use esp_hal::{time::Rate, Async};
 use esp_println as _;
-use heapless::{String, Vec};
+use geohash::{encode, Coord, Direction};
+use hashbrown::HashMap;
+use heapless::String as HString;
 use libm::{atan2, cos, sin, sqrt};
 use ssd1306::mode::DisplayConfigAsync;
 use ssd1306::{
@@ -31,15 +33,15 @@ use ssd1306::{
 };
 use static_cell::StaticCell;
 
-// Shared GPS data structure
 #[derive(Clone, Copy)]
 struct GpsData {
     lat: f32,
     lon: f32,
     satellites: u8,
-    speed: f32,   // Speed in knots
-    heading: f32, // Heading in degrees
+    speed: f32,
+    heading: f32,
     valid: bool,
+    notification: Option<&'static str>,
 }
 
 impl Default for GpsData {
@@ -51,11 +53,11 @@ impl Default for GpsData {
             speed: 0.0,
             heading: 0.0,
             valid: false,
+            notification: None,
         }
     }
 }
 
-// Global shared GPS data - use a reference that gets initialized
 static GPS_DATA_CELL: StaticCell<
     Mutex<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, GpsData>,
 > = StaticCell::new();
@@ -63,8 +65,17 @@ static mut GPS_DATA_REF: Option<
     &'static Mutex<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, GpsData>,
 > = None;
 
+type LocationMap = HashMap<HString<12>, AllocVec<(&'static str, Coord<f64>)>>;
+static LOCATION_MAP_CELL: StaticCell<
+    Mutex<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, LocationMap>,
+> = StaticCell::new();
+static mut LOCATION_MAP_REF: Option<
+    &'static Mutex<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, LocationMap>,
+> = None;
+
 #[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    esp_println::println!("{}", info);
     loop {}
 }
 
@@ -72,30 +83,87 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
+    // Correct location for the heap allocator macro: inside main.
+    esp_alloc::heap_allocator!(32 * 1024);
+
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
     let timer0 = TimerGroup::new(peripherals.TIMG1);
     esp_hal_embassy::init(timer0.timer0);
 
-    // Initialize shared GPS data
     let gps_data_mutex = Mutex::new(GpsData::default());
     let gps_data_ref = GPS_DATA_CELL.init(gps_data_mutex);
     unsafe {
         GPS_DATA_REF = Some(gps_data_ref);
     }
 
-    // Configure UART for GPS
+    const KNOWN_LOCATIONS: [(&'static str, Coord<f64>); 4] = [
+        (
+            "Willis Tower",
+            Coord {
+                y: 41.8781,
+                x: -87.6359,
+            },
+        ),
+        (
+            "The Bean",
+            Coord {
+                y: 41.8827,
+                x: -87.6233,
+            },
+        ),
+        (
+            "Water Tower",
+            Coord {
+                y: 41.8974,
+                x: -87.6243,
+            },
+        ),
+        // (
+        //     "O'Hare Airport",
+        //     Coord {
+        //         y: 41.9742,
+        //         x: -87.9073,
+        //     },
+        // ),
+        (
+            "Sacramento",
+            Coord {
+                y: 41.995144,
+                x: -87.70459,
+            },
+        ),
+    ];
+
+    const PRECISION: usize = 7;
+    let mut location_map: LocationMap = HashMap::new();
+    for (name, location) in KNOWN_LOCATIONS.iter() {
+        let geohash_str = encode(*location, PRECISION).expect("Failed to encode location");
+        let mut key = HString::<12>::new();
+        write!(key, "{}", geohash_str).unwrap();
+        let entry = location_map.entry(key).or_insert_with(AllocVec::new);
+        entry.push((*name, *location));
+    }
+
+    let location_map_mutex = Mutex::new(location_map);
+    let location_map_ref = LOCATION_MAP_CELL.init(location_map_mutex);
+    unsafe {
+        LOCATION_MAP_REF = Some(location_map_ref);
+    }
+
     let tx_pin = peripherals.GPIO4;
     let rx_pin = peripherals.GPIO5;
-    let config = Config::default().with_baudrate(9600);
-    let uart = Uart::new(peripherals.UART1, config)
+
+    let uart_config = Config::default().with_baudrate(9600);
+
+    // The UART driver now manages its own buffering internally
+    let uart = Uart::new(peripherals.UART1, uart_config)
         .expect("UART initialization failed")
         .with_rx(rx_pin)
         .with_tx(tx_pin)
         .into_async();
 
-    // Configure I2C for OLED
     let i2c_bus = esp_hal::i2c::master::I2c::new(
         peripherals.I2C0,
         esp_hal::i2c::master::Config::default().with_frequency(Rate::from_khz(400)),
@@ -110,12 +178,100 @@ async fn main(spawner: Spawner) {
         .into_buffered_graphics_mode();
     display.init().await.unwrap();
 
-    // Spawn tasks
     spawner.spawn(gps_task(uart)).unwrap();
-    spawner.spawn(display_task(display)).unwrap();
+    // spawner.spawn(display_task(display)).unwrap();
+    spawner.spawn(proximity_check_task()).unwrap();
 
     loop {
         Timer::after(Duration::from_secs(1)).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn proximity_check_task() {
+    const PRECISION: usize = 7;
+    const DISTANCE_THRESHOLD_KM: f64 = 2.0; // 2 km
+    const HEADING_TOLERANCE_DEG: f64 = 30.0;
+
+    loop {
+        Timer::after(Duration::from_secs(5)).await;
+
+        let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
+        let mut gps_data = gps_ref.lock().await;
+
+        if gps_data.valid && gps_data.speed == 3.0 {
+            let current_pos = Coord {
+                y: gps_data.lat as f64,
+                x: gps_data.lon as f64,
+            };
+            let central_hash_str = encode(current_pos, PRECISION).unwrap();
+
+            let mut search_hashes: heapless::Vec<HString<12>, 9> = heapless::Vec::new();
+            let mut central_key = HString::<12>::new();
+            write!(central_key, "{}", &central_hash_str).unwrap();
+            search_hashes.push(central_key).ok();
+
+            for dir in [
+                Direction::N,
+                Direction::NE,
+                Direction::E,
+                Direction::SE,
+                Direction::S,
+                Direction::SW,
+                Direction::W,
+                Direction::NW,
+            ] {
+                if let Ok(neighbor) = geohash::neighbor(&central_hash_str, dir) {
+                    let mut key = HString::<12>::new();
+                    write!(key, "{}", neighbor).unwrap();
+                    search_hashes.push(key).ok();
+                }
+            }
+
+            let mut closest_location: Option<&'static str> = None;
+            let mut closest_dist = f64::MAX;
+
+            let location_map_ref = unsafe { LOCATION_MAP_REF.unwrap() };
+            let location_map = location_map_ref.lock().await;
+
+            for hash_key in search_hashes.iter() {
+                if let Some(locations) = location_map.get(hash_key) {
+                    for (name, candidate_coord) in locations.iter() {
+                        defmt::info!("Candidate location: {}", name);
+
+                        let distance = calculate_distance(
+                            current_pos.y,
+                            current_pos.x,
+                            candidate_coord.y,
+                            candidate_coord.x,
+                        );
+
+                        if distance < DISTANCE_THRESHOLD_KM {
+                            let required_heading = calculate_heading(
+                                current_pos.y,
+                                current_pos.x,
+                                candidate_coord.y,
+                                candidate_coord.x,
+                            );
+                            let heading_diff = (gps_data.heading as f64 - required_heading).abs();
+
+                            if heading_diff <= HEADING_TOLERANCE_DEG
+                                || (360.0 - heading_diff) <= HEADING_TOLERANCE_DEG
+                            {
+                                defmt::info!("✅ Heading towards {}!", name);
+                                if distance < closest_dist {
+                                    closest_dist = distance;
+                                    closest_location = Some(name);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            gps_data.notification = closest_location;
+        } else if gps_data.valid {
+            gps_data.notification = None;
+        }
     }
 }
 
@@ -196,6 +352,7 @@ async fn gps_task(mut uart: Uart<'static, Async>) {
         }
     }
 }
+
 #[embassy_executor::task]
 async fn display_task(
     mut display: Ssd1306Async<
@@ -206,48 +363,43 @@ async fn display_task(
 ) {
     loop {
         display.clear(BinaryColor::Off).unwrap();
-
-        let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
-        let gps_data = gps_ref.lock().await;
+        let gps_data = unsafe { GPS_DATA_REF.unwrap().lock().await };
         let data_copy = *gps_data;
         drop(gps_data);
-
         draw_gps_ui(&mut display, &data_copy).unwrap();
         display.flush().await.unwrap();
-
-        Timer::after(Duration::from_secs(3)).await;
+        Timer::after(Duration::from_secs(1)).await;
     }
 }
 
-fn draw_gps_ui<D>(display: &mut D, gps: &GpsData) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = BinaryColor>,
-{
+fn draw_gps_ui<D: DrawTarget<Color = BinaryColor>>(
+    display: &mut D,
+    gps: &GpsData,
+) -> Result<(), D::Error> {
     let text_style = MonoTextStyle::new(&FONT_9X15, BinaryColor::On);
 
-    if gps.valid {
-        // Line 1: Latitude - max 14 chars: "Lat:12.34567"
-        let mut lat_str: String<16> = String::new();
-        write!(lat_str, "Lat:{:.5}", gps.lat).unwrap();
-        Text::with_baseline(&lat_str, Point::new(0, 0), text_style, Baseline::Top).draw(display)?;
-
-        // Line 2: Longitude - max 14 chars: "Lon:123.45678"
-        let mut lon_str: String<16> = String::new();
-        write!(lon_str, "Lon:{:.5}", gps.lon).unwrap();
-        Text::with_baseline(&lon_str, Point::new(0, 16), text_style, Baseline::Top)
+    if let Some(notification) = gps.notification {
+        Text::with_baseline("Approaching:", Point::new(0, 16), text_style, Baseline::Top)
             .draw(display)?;
-
-        // Line 3: Satellites and Speed - max 14 chars: "Sat:12 Spd:3.4"
-        let mut sat_speed_str: String<16> = String::new();
-        write!(sat_speed_str, "Sat:{} Spd:{:.1}", gps.satellites, gps.speed).unwrap();
-        Text::with_baseline(&sat_speed_str, Point::new(0, 32), text_style, Baseline::Top)
+        Text::with_baseline(notification, Point::new(0, 32), text_style, Baseline::Top)
             .draw(display)?;
+    } else if gps.valid {
+        let mut line: HString<20> = HString::new();
 
-        // Line 4: Heading - max 14 chars: "Hd:123.4d"
-        let mut heading_str: String<16> = String::new();
-        write!(heading_str, "Hd:{:.1}d", gps.heading).unwrap();
-        Text::with_baseline(&heading_str, Point::new(0, 48), text_style, Baseline::Top)
-            .draw(display)?;
+        write!(line, "Lat:{:.5}", gps.lat).unwrap();
+        Text::with_baseline(&line, Point::new(0, 0), text_style, Baseline::Top).draw(display)?;
+        line.clear();
+
+        write!(line, "Lon:{:.5}", gps.lon).unwrap();
+        Text::with_baseline(&line, Point::new(0, 16), text_style, Baseline::Top).draw(display)?;
+        line.clear();
+
+        write!(line, "Sat:{} Spd:{:.1}", gps.satellites, gps.speed).unwrap();
+        Text::with_baseline(&line, Point::new(0, 32), text_style, Baseline::Top).draw(display)?;
+        line.clear();
+
+        write!(line, "Hd:{:.1}d", gps.heading).unwrap();
+        Text::with_baseline(&line, Point::new(0, 48), text_style, Baseline::Top).draw(display)?;
     } else {
         Text::with_baseline(
             "Waiting for GPS",
@@ -259,7 +411,6 @@ where
         Text::with_baseline("fix...", Point::new(0, 32), text_style, Baseline::Top)
             .draw(display)?;
     }
-
     Ok(())
 }
 
@@ -267,17 +418,12 @@ fn nmea_to_decimal(coord: &str, dir: &str) -> Option<f32> {
     if coord.len() < 4 {
         return None;
     }
-    let (degrees, minutes) = if coord.contains('.') {
-        let split = coord.find('.')?;
+    let (degrees, minutes) = if let Some(split) = coord.find('.') {
         let deg_len = split - 2;
-        let degrees = &coord[..deg_len];
-        let minutes = &coord[deg_len..];
-        (degrees, minutes)
+        (&coord[..deg_len], &coord[deg_len..])
     } else {
         let deg_len = coord.len() - 2;
-        let degrees = &coord[..deg_len];
-        let minutes = &coord[deg_len..];
-        (degrees, minutes)
+        (&coord[..deg_len], &coord[deg_len..])
     };
     let deg: f32 = degrees.parse().ok()?;
     let min: f32 = minutes.parse().ok()?;
@@ -289,11 +435,8 @@ fn nmea_to_decimal(coord: &str, dir: &str) -> Option<f32> {
 }
 
 fn parse_gga(sentence: &str) -> Option<(f32, f32, u8)> {
-    let mut fields: Vec<&str, 16> = Vec::new();
-    for field in sentence.split(',') {
-        let _ = fields.push(field);
-    }
-    if fields.len() < 8 {
+    let fields: heapless::Vec<&str, 16> = sentence.split(',').collect();
+    if fields.len() < 8 || fields[6] == "0" || fields[6].is_empty() {
         return None;
     }
     let lat = nmea_to_decimal(fields[2], fields[3])?;
@@ -302,92 +445,52 @@ fn parse_gga(sentence: &str) -> Option<(f32, f32, u8)> {
     Some((lat, lon, sats))
 }
 
-// Parse $GPRMC sentence: lat, lon, speed, heading
 fn parse_rmc(sentence: &str) -> Option<(f32, f32, f32, f32)> {
-    let mut fields: Vec<&str, 16> = Vec::new();
-    for field in sentence.split(',') {
-        let _ = fields.push(field);
-    }
-    if fields.len() < 9 {
+    let fields: heapless::Vec<&str, 16> = sentence.split(',').collect();
+    if fields.len() < 9 || fields[2] != "A" {
         return None;
     }
     let lat = nmea_to_decimal(fields[3], fields[4])?;
     let lon = nmea_to_decimal(fields[5], fields[6])?;
-    let speed: f32 = fields[7].parse().ok()?; // knots
-    let heading: f32 = fields[8].parse().ok()?; // degrees
+    let speed: f32 = fields[7].parse().ok().unwrap_or(0.0);
+    let heading: f32 = fields[8].parse().ok().unwrap_or(0.0);
     Some((lat, lon, speed, heading))
 }
 
-// Helper function to convert degrees to radians, as .to_radians() is not available
 #[inline]
 fn deg_to_rad(deg: f64) -> f64 {
     deg * (PI / 180.0)
 }
-
-// Helper function to convert radians to degrees, as .to_degrees() is not available
 #[inline]
 fn rad_to_deg(rad: f64) -> f64 {
     rad * (180.0 / PI)
 }
 
-/// Calculates the great-circle distance between two points in a no_std environment.
-///
-/// # Arguments
-/// * `lat1`, `lon1`: Latitude and longitude of the first point (in decimal degrees).
-/// * `lat2`, `lon2`: Latitude and longitude of the second point (in decimal degrees).
-///
-/// # Returns
-/// The distance in kilometers.
 pub fn calculate_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    // Earth's radius in kilometers
     const R: f64 = 6371.0;
-
-    // Convert coordinates from degrees to radians using our helper
-    let lat1_rad = deg_to_rad(lat1);
-    let lon1_rad = deg_to_rad(lon1);
-    let lat2_rad = deg_to_rad(lat2);
-    let lon2_rad = deg_to_rad(lon2);
-
-    // Differences in coordinates
-    let dlon = lon2_rad - lon1_rad;
-    let dlat = lat2_rad - lat1_rad;
-
-    // Haversine formula using libm functions
+    let (lat1_rad, lon1_rad, lat2_rad, lon2_rad) = (
+        deg_to_rad(lat1),
+        deg_to_rad(lon1),
+        deg_to_rad(lat2),
+        deg_to_rad(lon2),
+    );
+    let (dlon, dlat) = (lon2_rad - lon1_rad, lat2_rad - lat1_rad);
     let sin_dlat_half = sin(dlat / 2.0);
     let sin_dlon_half = sin(dlon / 2.0);
     let a = sin_dlat_half * sin_dlat_half
         + cos(lat1_rad) * cos(lat2_rad) * sin_dlon_half * sin_dlon_half;
-
-    let c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
-
-    R * c
+    2.0 * atan2(sqrt(a), sqrt(1.0 - a)) * R
 }
 
-/// Calculates the initial heading (bearing) in a no_std environment.
-///
-/// # Arguments
-/// * `lat1`, `lon1`: Latitude and longitude of the first point (in decimal degrees).
-/// * `lat2`, `lon2`: Latitude and longitude of the second point (in decimal degrees).
-///
-/// # Returns
-/// The initial heading in degrees (0-360).
 pub fn calculate_heading(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    // Convert coordinates from degrees to radians
-    let lat1_rad = deg_to_rad(lat1);
-    let lon1_rad = deg_to_rad(lon1);
-    let lat2_rad = deg_to_rad(lat2);
-    let lon2_rad = deg_to_rad(lon2);
-
-    // Difference in longitude
+    let (lat1_rad, lon1_rad, lat2_rad, lon2_rad) = (
+        deg_to_rad(lat1),
+        deg_to_rad(lon1),
+        deg_to_rad(lat2),
+        deg_to_rad(lon2),
+    );
     let dlon = lon2_rad - lon1_rad;
-
-    // Formula for bearing using libm functions
     let y = sin(dlon) * cos(lat2_rad);
     let x = cos(lat1_rad) * sin(lat2_rad) - sin(lat1_rad) * cos(lat2_rad) * cos(dlon);
-
-    let initial_bearing_rad = atan2(y, x);
-
-    // Convert from radians to degrees and normalize
-    let initial_bearing_deg = rad_to_deg(initial_bearing_rad);
-    (initial_bearing_deg + 360.0) % 360.0
+    (rad_to_deg(atan2(y, x)) + 360.0) % 360.0
 }

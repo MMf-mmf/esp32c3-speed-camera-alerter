@@ -121,65 +121,81 @@ async fn main(spawner: Spawner) {
 
 #[embassy_executor::task]
 async fn gps_task(mut uart: Uart<'static, Async>) {
+    // A buffer to build the current NMEA sentence
     let mut sentence = [0u8; 128];
     let mut idx = 0;
 
-    loop {
-        let mut buffer = [0u8; 1];
-        match uart.read_async(&mut buffer).await {
-            Ok(_) => {
-                let byte = buffer[0];
-                if idx < sentence.len() {
-                    sentence[idx] = byte;
-                    idx += 1;
-                }
+    // A larger buffer to read chunks of data from the UART efficiently
+    let mut read_buf = [0u8; 64];
 
-                if byte == b'\n' || byte == b'\r' || idx == sentence.len() {
-                    if idx > 1 {
-                        if let Ok(s) = core::str::from_utf8(&sentence[..idx]) {
-                            let sentence_str = s.trim();
-                            if sentence_str.starts_with("$GPGGA") {
-                                if let Some((lat, lon, sats)) = parse_gga(sentence_str) {
-                                    defmt::info!("GPGGA: Lat {}, Lon {}, Sats {}", lat, lon, sats);
-                                    let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
-                                    let mut gps_data = gps_ref.lock().await;
-                                    gps_data.lat = lat;
-                                    gps_data.lon = lon;
-                                    gps_data.satellites = sats;
-                                    gps_data.valid = true;
-                                    // Note: speed and heading are preserved from previous GPRMC
-                                }
-                            } else if sentence_str.starts_with("$GPRMC") {
-                                if let Some((lat, lon, speed, heading)) = parse_rmc(sentence_str) {
-                                    defmt::info!(
-                                        "GPRMC: Lat {}, Lon {}, Speed {} knots, Heading {}°",
-                                        lat,
-                                        lon,
-                                        speed,
-                                        heading
-                                    );
-                                    let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
-                                    let mut gps_data = gps_ref.lock().await;
-                                    gps_data.lat = lat;
-                                    gps_data.lon = lon;
-                                    gps_data.speed = speed;
-                                    gps_data.heading = heading;
-                                    gps_data.valid = true;
-                                    // Note: satellites count is preserved from previous GPGGA
+    loop {
+        // Wait for data and read as much as is available (up to 64 bytes)
+        match uart.read_async(&mut read_buf).await {
+            Ok(bytes_read) => {
+                // Process each byte that we just read in the chunk
+                for &byte in &read_buf[..bytes_read] {
+                    // Add the byte to our sentence buffer if there's space
+                    if idx < sentence.len() {
+                        sentence[idx] = byte;
+                        idx += 1;
+                    }
+
+                    // Check if we've reached the end of a line (or the buffer is full)
+                    if byte == b'\n' || byte == b'\r' || idx == sentence.len() {
+                        // Only process if the sentence has content
+                        if idx > 1 {
+                            if let Ok(s) = core::str::from_utf8(&sentence[..idx]) {
+                                let sentence_str = s.trim();
+                                if sentence_str.starts_with("$GPGGA") {
+                                    if let Some((lat, lon, sats)) = parse_gga(sentence_str) {
+                                        defmt::info!(
+                                            "GPGGA: Lat {}, Lon {}, Sats {}",
+                                            lat,
+                                            lon,
+                                            sats
+                                        );
+                                        let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
+                                        let mut gps_data = gps_ref.lock().await;
+                                        gps_data.lat = lat;
+                                        gps_data.lon = lon;
+                                        gps_data.satellites = sats;
+                                        gps_data.valid = true;
+                                    }
+                                } else if sentence_str.starts_with("$GPRMC") {
+                                    if let Some((lat, lon, speed, heading)) =
+                                        parse_rmc(sentence_str)
+                                    {
+                                        defmt::info!(
+                                            "GPRMC: Lat {}, Lon {}, Speed {} knots, Heading {}°",
+                                            lat,
+                                            lon,
+                                            speed,
+                                            heading
+                                        );
+                                        let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
+                                        let mut gps_data = gps_ref.lock().await;
+                                        gps_data.lat = lat;
+                                        gps_data.lon = lon;
+                                        gps_data.speed = speed;
+                                        gps_data.heading = heading;
+                                        gps_data.valid = true;
+                                    }
                                 }
                             }
                         }
+                        // Reset the index to start building the next sentence
+                        idx = 0;
                     }
-                    idx = 0;
                 }
             }
             Err(e) => {
+                // With chunked reading, overflows are much less likely, but we still handle errors
+                idx = 0;
                 defmt::error!("UART error: {:?}", e);
             }
         }
     }
 }
-
 #[embassy_executor::task]
 async fn display_task(
     mut display: Ssd1306Async<
@@ -199,7 +215,7 @@ async fn display_task(
         draw_gps_ui(&mut display, &data_copy).unwrap();
         display.flush().await.unwrap();
 
-        Timer::after(Duration::from_secs(1)).await;
+        Timer::after(Duration::from_secs(3)).await;
     }
 }
 

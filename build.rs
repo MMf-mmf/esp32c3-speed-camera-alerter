@@ -1,4 +1,50 @@
+use std::env;
+use std::fs;
+use std::io::{BufWriter, Write};
+use std::path::Path;
+
 fn main() {
+    // 1. Set the path for the generated code.
+    let path = Path::new(&env::var("OUT_DIR").unwrap()).join("geodata.rs");
+    let mut file = BufWriter::new(fs::File::create(&path).unwrap());
+
+    // 2. Start building the phf_codegen::Map.
+    let mut map_builder = phf_codegen::Map::new();
+
+    // 3. Read the CSV and add entries to the builder.
+    let data_str = fs::read_to_string("docs/geodata.csv").expect("Unable to read docs/geodata.csv");
+    for line in data_str.lines().skip(1) {
+        // Skip the header row
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() != 3 {
+            continue;
+        } // Skip malformed lines
+
+        let geohash = parts[0];
+        if geohash == "geohash" {
+            continue;
+        }
+
+        if let (Ok(latitude), Ok(longitude)) = (parts[1].parse::<f64>(), parts[2].parse::<f64>()) {
+            // The key is the geohash string.
+            // The value is a string representation of the Coordinates struct constructor.
+            let value_str = format!(
+                "Coordinates {{ latitude: {}, longitude: {} }}",
+                latitude, longitude
+            );
+
+            map_builder.entry(geohash, &value_str);
+        }
+    }
+
+    // 4. Finalize the map string and write it to the file.
+    writeln!(
+        &mut file,
+        "static GEO_MAP: phf::Map<&'static str, Coordinates> = {};",
+        map_builder.build()
+    )
+    .unwrap();
+    // end of phf map generation used to generate the geohash hash
     linker_be_nice();
     println!("cargo:rustc-link-arg=-Tdefmt.x");
     // make sure linkall.x is the last linker script (otherwise might cause problems with flip-link)

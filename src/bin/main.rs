@@ -6,7 +6,6 @@ extern crate alloc;
 // We bring the allocator into scope here.
 use esp_alloc as _;
 
-use alloc::vec::Vec as AllocVec;
 use core::f64::consts::PI;
 use core::fmt::Write;
 use defmt;
@@ -24,7 +23,6 @@ use esp_hal::uart::{Config, Uart};
 use esp_hal::{time::Rate, Async};
 use esp_println as _;
 use geohash::{encode, Coord, Direction};
-use hashbrown::HashMap;
 use heapless::String as HString;
 use libm::{atan2, cos, sin, sqrt};
 use ssd1306::mode::DisplayConfigAsync;
@@ -33,7 +31,15 @@ use ssd1306::{
 };
 use static_cell::StaticCell;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Coordinates {
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
+include!(concat!(env!("OUT_DIR"), "/geodata.rs"));
+
+#[derive(Clone)]
 struct GpsData {
     lat: f32,
     lon: f32,
@@ -41,7 +47,7 @@ struct GpsData {
     speed: f32,
     heading: f32,
     valid: bool,
-    notification: Option<&'static str>,
+    notification: Option<HString<12>>,
 }
 
 impl Default for GpsData {
@@ -63,14 +69,6 @@ static GPS_DATA_CELL: StaticCell<
 > = StaticCell::new();
 static mut GPS_DATA_REF: Option<
     &'static Mutex<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, GpsData>,
-> = None;
-
-type LocationMap = HashMap<HString<12>, AllocVec<(&'static str, Coord<f64>)>>;
-static LOCATION_MAP_CELL: StaticCell<
-    Mutex<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, LocationMap>,
-> = StaticCell::new();
-static mut LOCATION_MAP_REF: Option<
-    &'static Mutex<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, LocationMap>,
 > = None;
 
 #[panic_handler]
@@ -96,60 +94,6 @@ async fn main(spawner: Spawner) {
     let gps_data_ref = GPS_DATA_CELL.init(gps_data_mutex);
     unsafe {
         GPS_DATA_REF = Some(gps_data_ref);
-    }
-
-    const KNOWN_LOCATIONS: [(&'static str, Coord<f64>); 4] = [
-        (
-            "Willis Tower",
-            Coord {
-                y: 41.8781,
-                x: -87.6359,
-            },
-        ),
-        (
-            "The Bean",
-            Coord {
-                y: 41.8827,
-                x: -87.6233,
-            },
-        ),
-        (
-            "Water Tower",
-            Coord {
-                y: 41.8974,
-                x: -87.6243,
-            },
-        ),
-        // (
-        //     "O'Hare Airport",
-        //     Coord {
-        //         y: 41.9742,
-        //         x: -87.9073,
-        //     },
-        // ),
-        (
-            "Sacramento",
-            Coord {
-                y: 41.995144,
-                x: -87.70459,
-            },
-        ),
-    ];
-
-    const PRECISION: usize = 7;
-    let mut location_map: LocationMap = HashMap::new();
-    for (name, location) in KNOWN_LOCATIONS.iter() {
-        let geohash_str = encode(*location, PRECISION).expect("Failed to encode location");
-        let mut key = HString::<12>::new();
-        write!(key, "{}", geohash_str).unwrap();
-        let entry = location_map.entry(key).or_insert_with(AllocVec::new);
-        entry.push((*name, *location));
-    }
-
-    let location_map_mutex = Mutex::new(location_map);
-    let location_map_ref = LOCATION_MAP_CELL.init(location_map_mutex);
-    unsafe {
-        LOCATION_MAP_REF = Some(location_map_ref);
     }
 
     let tx_pin = peripherals.GPIO4;
@@ -228,41 +172,37 @@ async fn proximity_check_task() {
                 }
             }
 
-            let mut closest_location: Option<&'static str> = None;
+            let mut closest_location: Option<HString<12>> = None;
             let mut closest_dist = f64::MAX;
 
-            let location_map_ref = unsafe { LOCATION_MAP_REF.unwrap() };
-            let location_map = location_map_ref.lock().await;
-
             for hash_key in search_hashes.iter() {
-                if let Some(locations) = location_map.get(hash_key) {
-                    for (name, candidate_coord) in locations.iter() {
-                        defmt::info!("Candidate location: {}", name);
+                if let Some(candidate_coord) = GEO_MAP.get(hash_key.as_str()) {
+                    defmt::info!("Candidate location geohash: {}", hash_key.as_str());
 
-                        let distance = calculate_distance(
+                    let distance = calculate_distance(
+                        current_pos.y,
+                        current_pos.x,
+                        candidate_coord.latitude,
+                        candidate_coord.longitude,
+                    );
+
+                    if distance < DISTANCE_THRESHOLD_KM {
+                        let required_heading = calculate_heading(
                             current_pos.y,
                             current_pos.x,
-                            candidate_coord.y,
-                            candidate_coord.x,
+                            candidate_coord.latitude,
+                            candidate_coord.longitude,
                         );
+                        let heading_diff = (gps_data.heading as f64 - required_heading).abs();
 
-                        if distance < DISTANCE_THRESHOLD_KM {
-                            let required_heading = calculate_heading(
-                                current_pos.y,
-                                current_pos.x,
-                                candidate_coord.y,
-                                candidate_coord.x,
-                            );
-                            let heading_diff = (gps_data.heading as f64 - required_heading).abs();
-
-                            if heading_diff <= HEADING_TOLERANCE_DEG
-                                || (360.0 - heading_diff) <= HEADING_TOLERANCE_DEG
-                            {
-                                defmt::info!("✅ Heading towards {}!", name);
-                                if distance < closest_dist {
-                                    closest_dist = distance;
-                                    closest_location = Some(name);
-                                }
+                        if heading_diff <= HEADING_TOLERANCE_DEG
+                            || (360.0 - heading_diff) <= HEADING_TOLERANCE_DEG
+                        {
+                            defmt::info!("✅ Heading towards geohash {}!", hash_key.as_str());
+                            if distance < closest_dist {
+                                closest_dist = distance;
+                                // Since we don't have names, we'll use the geohash for notification
+                                closest_location = Some(hash_key.clone());
                             }
                         }
                     }
@@ -364,7 +304,7 @@ async fn display_task(
     loop {
         display.clear(BinaryColor::Off).unwrap();
         let gps_data = unsafe { GPS_DATA_REF.unwrap().lock().await };
-        let data_copy = *gps_data;
+        let data_copy = gps_data.clone();
         drop(gps_data);
         draw_gps_ui(&mut display, &data_copy).unwrap();
         display.flush().await.unwrap();
@@ -378,11 +318,16 @@ fn draw_gps_ui<D: DrawTarget<Color = BinaryColor>>(
 ) -> Result<(), D::Error> {
     let text_style = MonoTextStyle::new(&FONT_9X15, BinaryColor::On);
 
-    if let Some(notification) = gps.notification {
+    if let Some(ref notification) = gps.notification {
         Text::with_baseline("Approaching:", Point::new(0, 16), text_style, Baseline::Top)
             .draw(display)?;
-        Text::with_baseline(notification, Point::new(0, 32), text_style, Baseline::Top)
-            .draw(display)?;
+        Text::with_baseline(
+            notification.as_str(),
+            Point::new(0, 32),
+            text_style,
+            Baseline::Top,
+        )
+        .draw(display)?;
     } else if gps.valid {
         let mut line: HString<20> = HString::new();
 

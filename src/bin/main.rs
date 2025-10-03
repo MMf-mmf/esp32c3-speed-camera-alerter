@@ -12,23 +12,14 @@ use defmt;
 use embassy_executor::Spawner;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
-use embedded_graphics::mono_font::ascii::FONT_9X15;
-use embedded_graphics::mono_font::MonoTextStyle;
-use embedded_graphics::pixelcolor::BinaryColor;
-use embedded_graphics::prelude::*;
-use embedded_graphics::text::{Baseline, Text};
 use esp_hal::clock::CpuClock;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::uart::{Config, Uart};
-use esp_hal::{time::Rate, Async};
+use esp_hal::Async;
 use esp_println as _;
 use geohash::{encode, Coord, Direction};
 use heapless::String as HString;
 use libm::{atan2, cos, sin, sqrt};
-use ssd1306::mode::DisplayConfigAsync;
-use ssd1306::{
-    prelude::DisplayRotation, size::DisplaySize128x64, I2CDisplayInterface, Ssd1306Async,
-};
 use static_cell::StaticCell;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -48,6 +39,9 @@ struct GpsData {
     heading: f32,
     valid: bool,
     notification: Option<HString<12>>,
+    time_hours: u8,
+    time_minutes: u8,
+    time_seconds: u8,
 }
 
 impl Default for GpsData {
@@ -60,6 +54,9 @@ impl Default for GpsData {
             heading: 0.0,
             valid: false,
             notification: None,
+            time_hours: 0,
+            time_minutes: 0,
+            time_seconds: 0,
         }
     }
 }
@@ -96,6 +93,22 @@ async fn main(spawner: Spawner) {
         GPS_DATA_REF = Some(gps_data_ref);
     }
 
+    // const TEST_HASHES: [&str; 3] = ["dp3ts4g", "dp3w6ry", "dp3wdbh"];
+    // // loop over the list get the hash value and print it to the screen
+
+    // for &hash in &TEST_HASHES {
+    //     if let Some(coord) = GEO_MAP.get(hash) {
+    //         defmt::info!(
+    //             "Geohash: {}, Latitude: {}, Longitude: {}",
+    //             hash,
+    //             coord.latitude,
+    //             coord.longitude
+    //         );
+    //     } else {
+    //         defmt::warn!("Geohash {} not found in GEO_MAP", hash);
+    //     }
+    // }
+
     let tx_pin = peripherals.GPIO4;
     let rx_pin = peripherals.GPIO5;
 
@@ -108,22 +121,7 @@ async fn main(spawner: Spawner) {
         .with_tx(tx_pin)
         .into_async();
 
-    let i2c_bus = esp_hal::i2c::master::I2c::new(
-        peripherals.I2C0,
-        esp_hal::i2c::master::Config::default().with_frequency(Rate::from_khz(400)),
-    )
-    .unwrap()
-    .with_scl(peripherals.GPIO9)
-    .with_sda(peripherals.GPIO6)
-    .into_async();
-
-    let interface = I2CDisplayInterface::new(i2c_bus);
-    let mut display = Ssd1306Async::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
-        .into_buffered_graphics_mode();
-    display.init().await.unwrap();
-
     spawner.spawn(gps_task(uart)).unwrap();
-    // spawner.spawn(display_task(display)).unwrap();
     spawner.spawn(proximity_check_task()).unwrap();
 
     loop {
@@ -136,14 +134,14 @@ async fn proximity_check_task() {
     const PRECISION: usize = 7;
     const DISTANCE_THRESHOLD_KM: f64 = 2.0; // 2 km
     const HEADING_TOLERANCE_DEG: f64 = 30.0;
-
+    const MINIMUM_SPEED_KNOTS: f32 = 2.7;
     loop {
         Timer::after(Duration::from_secs(5)).await;
 
         let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
         let mut gps_data = gps_ref.lock().await;
 
-        if gps_data.valid && gps_data.speed == 3.0 {
+        if gps_data.valid && gps_data.speed > MINIMUM_SPEED_KNOTS {
             let current_pos = Coord {
                 y: gps_data.lat as f64,
                 x: gps_data.lon as f64,
@@ -243,26 +241,30 @@ async fn gps_task(mut uart: Uart<'static, Async>) {
                             if let Ok(s) = core::str::from_utf8(&sentence[..idx]) {
                                 let sentence_str = s.trim();
                                 if sentence_str.starts_with("$GPGGA") {
-                                    if let Some((lat, lon, sats)) = parse_gga(sentence_str) {
-                                        defmt::info!(
-                                            "GPGGA: Lat {}, Lon {}, Sats {}",
-                                            lat,
-                                            lon,
-                                            sats
-                                        );
+                                    // GPGGA: Only update satellite count
+                                    if let Some(sats) = parse_gga(sentence_str) {
+                                        defmt::info!("GPGGA: Sats {}", sats);
                                         let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
                                         let mut gps_data = gps_ref.lock().await;
-                                        gps_data.lat = lat;
-                                        gps_data.lon = lon;
                                         gps_data.satellites = sats;
-                                        gps_data.valid = true;
                                     }
                                 } else if sentence_str.starts_with("$GPRMC") {
-                                    if let Some((lat, lon, speed, heading)) =
-                                        parse_rmc(sentence_str)
+                                    // GPRMC: Primary source for position, speed, heading, and time
+                                    if let Some((
+                                        lat,
+                                        lon,
+                                        speed,
+                                        heading,
+                                        hours,
+                                        minutes,
+                                        seconds,
+                                    )) = parse_rmc(sentence_str)
                                     {
                                         defmt::info!(
-                                            "GPRMC: Lat {}, Lon {}, Speed {} knots, Heading {}°",
+                                            "GPRMC: {}:{:02}:{:02} UTC, Lat {}, Lon {}, Speed {} knots, Heading {}°",
+                                            hours,
+                                            minutes,
+                                            seconds,
                                             lat,
                                             lon,
                                             speed,
@@ -274,6 +276,9 @@ async fn gps_task(mut uart: Uart<'static, Async>) {
                                         gps_data.lon = lon;
                                         gps_data.speed = speed;
                                         gps_data.heading = heading;
+                                        gps_data.time_hours = hours;
+                                        gps_data.time_minutes = minutes;
+                                        gps_data.time_seconds = seconds;
                                         gps_data.valid = true;
                                     }
                                 }
@@ -291,72 +296,6 @@ async fn gps_task(mut uart: Uart<'static, Async>) {
             }
         }
     }
-}
-
-#[embassy_executor::task]
-async fn display_task(
-    mut display: Ssd1306Async<
-        ssd1306::prelude::I2CInterface<esp_hal::i2c::master::I2c<'static, esp_hal::Async>>,
-        DisplaySize128x64,
-        ssd1306::mode::BufferedGraphicsModeAsync<DisplaySize128x64>,
-    >,
-) {
-    loop {
-        display.clear(BinaryColor::Off).unwrap();
-        let gps_data = unsafe { GPS_DATA_REF.unwrap().lock().await };
-        let data_copy = gps_data.clone();
-        drop(gps_data);
-        draw_gps_ui(&mut display, &data_copy).unwrap();
-        display.flush().await.unwrap();
-        Timer::after(Duration::from_secs(1)).await;
-    }
-}
-
-fn draw_gps_ui<D: DrawTarget<Color = BinaryColor>>(
-    display: &mut D,
-    gps: &GpsData,
-) -> Result<(), D::Error> {
-    let text_style = MonoTextStyle::new(&FONT_9X15, BinaryColor::On);
-
-    if let Some(ref notification) = gps.notification {
-        Text::with_baseline("Approaching:", Point::new(0, 16), text_style, Baseline::Top)
-            .draw(display)?;
-        Text::with_baseline(
-            notification.as_str(),
-            Point::new(0, 32),
-            text_style,
-            Baseline::Top,
-        )
-        .draw(display)?;
-    } else if gps.valid {
-        let mut line: HString<20> = HString::new();
-
-        write!(line, "Lat:{:.5}", gps.lat).unwrap();
-        Text::with_baseline(&line, Point::new(0, 0), text_style, Baseline::Top).draw(display)?;
-        line.clear();
-
-        write!(line, "Lon:{:.5}", gps.lon).unwrap();
-        Text::with_baseline(&line, Point::new(0, 16), text_style, Baseline::Top).draw(display)?;
-        line.clear();
-
-        write!(line, "Sat:{} Spd:{:.1}", gps.satellites, gps.speed).unwrap();
-        Text::with_baseline(&line, Point::new(0, 32), text_style, Baseline::Top).draw(display)?;
-        line.clear();
-
-        write!(line, "Hd:{:.1}d", gps.heading).unwrap();
-        Text::with_baseline(&line, Point::new(0, 48), text_style, Baseline::Top).draw(display)?;
-    } else {
-        Text::with_baseline(
-            "Waiting for GPS",
-            Point::new(0, 16),
-            text_style,
-            Baseline::Top,
-        )
-        .draw(display)?;
-        Text::with_baseline("fix...", Point::new(0, 32), text_style, Baseline::Top)
-            .draw(display)?;
-    }
-    Ok(())
 }
 
 fn nmea_to_decimal(coord: &str, dir: &str) -> Option<f32> {
@@ -379,27 +318,41 @@ fn nmea_to_decimal(coord: &str, dir: &str) -> Option<f32> {
     Some(val)
 }
 
-fn parse_gga(sentence: &str) -> Option<(f32, f32, u8)> {
+fn parse_nmea_time(time_str: &str) -> Option<(u8, u8, u8)> {
+    // NMEA time format: HHMMSS.sss or HHMMSS
+    if time_str.len() < 6 {
+        return None;
+    }
+    let hours: u8 = time_str[0..2].parse().ok()?;
+    let minutes: u8 = time_str[2..4].parse().ok()?;
+    let seconds: u8 = time_str[4..6].parse().ok()?;
+    Some((hours, minutes, seconds))
+}
+
+fn parse_gga(sentence: &str) -> Option<u8> {
     let fields: heapless::Vec<&str, 16> = sentence.split(',').collect();
     if fields.len() < 8 || fields[6] == "0" || fields[6].is_empty() {
         return None;
     }
-    let lat = nmea_to_decimal(fields[2], fields[3])?;
-    let lon = nmea_to_decimal(fields[4], fields[5])?;
     let sats: u8 = fields[7].parse().ok()?;
-    Some((lat, lon, sats))
+    Some(sats)
 }
 
-fn parse_rmc(sentence: &str) -> Option<(f32, f32, f32, f32)> {
+fn parse_rmc(sentence: &str) -> Option<(f32, f32, f32, f32, u8, u8, u8)> {
     let fields: heapless::Vec<&str, 16> = sentence.split(',').collect();
     if fields.len() < 9 || fields[2] != "A" {
+        defmt::warn!("No GPS fix in RMC sentence");
         return None;
     }
+
+    // Parse time from field 1
+    let (hours, minutes, seconds) = parse_nmea_time(fields[1]).unwrap_or((0, 0, 0));
+
     let lat = nmea_to_decimal(fields[3], fields[4])?;
     let lon = nmea_to_decimal(fields[5], fields[6])?;
     let speed: f32 = fields[7].parse().ok().unwrap_or(0.0);
     let heading: f32 = fields[8].parse().ok().unwrap_or(0.0);
-    Some((lat, lon, speed, heading))
+    Some((lat, lon, speed, heading, hours, minutes, seconds))
 }
 
 #[inline]

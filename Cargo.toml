@@ -34,6 +34,10 @@ embassy-sync     = "0.6.0"
 esp-hal-embassy  = { version = "0.9.0", features = ["esp32c3"] }
 static_cell      = "2.1.1"
 
+# LED dependencies
+esp-hal-smartled = { git = "https://github.com/esp-rs/esp-hal-community", package = "esp-hal-smartled", features = ["esp32c3"] }
+smart-leds = "=0.4.0"
+
 [build-dependencies]
 phf_codegen = "0.11"
 phf = { version = "0.11", default-features = false }

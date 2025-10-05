@@ -13,14 +13,22 @@ use embassy_executor::Spawner;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use esp_hal::clock::CpuClock;
+use esp_hal::rmt::Rmt;
+use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::uart::{Config, Uart};
 use esp_hal::Async;
+use esp_hal_smartled::SmartLedsAdapter;
 use esp_println as _;
 use geohash::{encode, Coord, Direction};
 use heapless::String as HString;
 use libm::{atan2, cos, sin, sqrt};
+use smart_leds::RGB8;
+use smart_leds::{brightness, gamma, SmartLedsWrite};
 use static_cell::StaticCell;
+
+// Type alias for the LED adapter
+type LedType = SmartLedsAdapter<esp_hal::rmt::ConstChannelAccess<esp_hal::rmt::Tx, 0>, 25>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Coordinates {
@@ -121,8 +129,14 @@ async fn main(spawner: Spawner) {
         .with_tx(tx_pin)
         .into_async();
 
+    // Initialize RMT for LED control
+    let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80)).expect("Failed to initialize RMT");
+    let rmt_buffer = [0u32; 25]; // (1 LED * 24 bits) + 1
+    let led = SmartLedsAdapter::new(rmt.channel0, peripherals.GPIO8, rmt_buffer);
+
     spawner.spawn(gps_task(uart)).unwrap();
     spawner.spawn(proximity_check_task()).unwrap();
+    spawner.spawn(led_control_task(led)).unwrap();
 
     loop {
         Timer::after(Duration::from_secs(1)).await;
@@ -130,11 +144,69 @@ async fn main(spawner: Spawner) {
 }
 
 #[embassy_executor::task]
+async fn led_control_task(mut led: LedType) {
+    const BRIGHTNESS_LOW: u8 = 10;
+    const BRIGHTNESS_HIGH: u8 = 100;
+
+    let color_red = RGB8 { r: 255, g: 0, b: 0 };
+    let color_green = RGB8 { r: 0, g: 255, b: 0 };
+    let color_yellow = RGB8 {
+        r: 255,
+        g: 255,
+        b: 0,
+    };
+    let color_off = RGB8 { r: 0, g: 0, b: 0 };
+
+    let mut blink_state = false;
+
+    loop {
+        let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
+        let gps_data = gps_ref.lock().await;
+
+        if gps_data.notification.is_some() {
+            // State 1: Heading to camera - RED at high brightness
+            led.write(brightness(
+                gamma(core::iter::once(color_red)),
+                BRIGHTNESS_HIGH,
+            ))
+            .ok();
+            drop(gps_data);
+            Timer::after(Duration::from_millis(500)).await;
+        } else if gps_data.valid {
+            // State 2: GPS fix but not heading to camera - GREEN at low brightness
+            led.write(brightness(
+                gamma(core::iter::once(color_green)),
+                BRIGHTNESS_LOW,
+            ))
+            .ok();
+            drop(gps_data);
+            Timer::after(Duration::from_millis(500)).await;
+        } else {
+            // State 3: No GPS fix - YELLOW blinking at low brightness (1s on/1s off)
+            drop(gps_data);
+
+            if blink_state {
+                led.write(brightness(
+                    gamma(core::iter::once(color_yellow)),
+                    BRIGHTNESS_LOW,
+                ))
+                .ok();
+            } else {
+                led.write(core::iter::once(color_off)).ok();
+            }
+
+            blink_state = !blink_state;
+            Timer::after(Duration::from_secs(1)).await;
+        }
+    }
+}
+
+#[embassy_executor::task]
 async fn proximity_check_task() {
     const PRECISION: usize = 7;
-    const DISTANCE_THRESHOLD_KM: f64 = 2.0; // 2 km
+    const DISTANCE_THRESHOLD_KM: f64 = 0.213; // 700 feet
     const HEADING_TOLERANCE_DEG: f64 = 30.0;
-    const MINIMUM_SPEED_KNOTS: f32 = 2.7;
+    const MINIMUM_SPEED_KNOTS: f32 = 5.0;
     loop {
         Timer::after(Duration::from_secs(5)).await;
 

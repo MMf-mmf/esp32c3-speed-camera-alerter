@@ -208,7 +208,7 @@ async fn proximity_check_task() {
     const HEADING_TOLERANCE_DEG: f64 = 25.0;
     const MINIMUM_SPEED_KNOTS: f32 = 7.0; // 8 mph
     loop {
-        Timer::after(Duration::from_secs(5)).await;
+        Timer::after(Duration::from_secs(3)).await;
 
         let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
         let mut gps_data = gps_ref.lock().await;

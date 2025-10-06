@@ -204,9 +204,9 @@ async fn led_control_task(mut led: LedType) {
 #[embassy_executor::task]
 async fn proximity_check_task() {
     const PRECISION: usize = 7;
-    const DISTANCE_THRESHOLD_KM: f64 = 0.213; // 700 feet
-    const HEADING_TOLERANCE_DEG: f64 = 30.0;
-    const MINIMUM_SPEED_KNOTS: f32 = 5.0;
+    const DISTANCE_THRESHOLD_KM: f64 = 0.244; // 800 feet
+    const HEADING_TOLERANCE_DEG: f64 = 25.0;
+    const MINIMUM_SPEED_KNOTS: f32 = 7.0; // 8 mph
     loop {
         Timer::after(Duration::from_secs(5)).await;
 

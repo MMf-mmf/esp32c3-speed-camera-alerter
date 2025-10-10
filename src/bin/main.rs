@@ -147,6 +147,8 @@ async fn main(spawner: Spawner) {
 async fn led_control_task(mut led: LedType) {
     const BRIGHTNESS_LOW: u8 = 10;
     const BRIGHTNESS_HIGH: u8 = 100;
+    const GREEN_BLINK_INTERVAL_MS: u64 = 10000; // 10 seconds between blinks
+    const GREEN_BLINK_DURATION_MS: u64 = 200; // 200ms blink duration
 
     let color_red = RGB8 { r: 255, g: 0, b: 0 };
     let color_green = RGB8 { r: 0, g: 255, b: 0 };
@@ -158,32 +160,50 @@ async fn led_control_task(mut led: LedType) {
     let color_off = RGB8 { r: 0, g: 0, b: 0 };
 
     let mut blink_state = false;
+    let mut green_timer_ms: u64 = 0;
 
     loop {
         let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
         let gps_data = gps_ref.lock().await;
 
         if gps_data.notification.is_some() {
-            // State 1: Heading to camera - RED at high brightness
+            // State 1: Heading to camera - RED at high brightness (continuous)
             led.write(brightness(
                 gamma(core::iter::once(color_red)),
                 BRIGHTNESS_HIGH,
             ))
             .ok();
             drop(gps_data);
+            green_timer_ms = 0; // Reset green timer when not in green state
             Timer::after(Duration::from_millis(500)).await;
         } else if gps_data.valid {
-            // State 2: GPS fix but not heading to camera - GREEN at low brightness
-            led.write(brightness(
-                gamma(core::iter::once(color_green)),
-                BRIGHTNESS_LOW,
-            ))
-            .ok();
+            // State 2: GPS fix but not heading to camera - GREEN blink every 10 seconds
             drop(gps_data);
-            Timer::after(Duration::from_millis(500)).await;
+
+            if green_timer_ms >= GREEN_BLINK_INTERVAL_MS {
+                // Time for a green blink
+                led.write(brightness(
+                    gamma(core::iter::once(color_green)),
+                    BRIGHTNESS_LOW,
+                ))
+                .ok();
+                Timer::after(Duration::from_millis(GREEN_BLINK_DURATION_MS)).await;
+
+                // Turn off LED after blink
+                led.write(core::iter::once(color_off)).ok();
+                green_timer_ms = 0; // Reset timer
+            } else {
+                // LED stays off, just increment timer
+                led.write(core::iter::once(color_off)).ok();
+            }
+
+            // Wait 1 second and increment timer (reduces mutex contention with GPS task)
+            Timer::after(Duration::from_secs(1)).await;
+            green_timer_ms += 1000;
         } else {
             // State 3: No GPS fix - YELLOW blinking at low brightness (1s on/1s off)
             drop(gps_data);
+            green_timer_ms = 0; // Reset green timer when not in green state
 
             if blink_state {
                 led.write(brightness(

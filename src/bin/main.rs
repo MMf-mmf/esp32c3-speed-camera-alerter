@@ -13,6 +13,7 @@ use embassy_executor::Spawner;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use esp_hal::clock::CpuClock;
+use esp_hal::gpio::{Level, Output};
 use esp_hal::rmt::Rmt;
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
@@ -50,6 +51,7 @@ struct GpsData {
     time_hours: u8,
     time_minutes: u8,
     time_seconds: u8,
+    buzzer_triggered: bool,
 }
 
 impl Default for GpsData {
@@ -65,6 +67,7 @@ impl Default for GpsData {
             time_hours: 0,
             time_minutes: 0,
             time_seconds: 0,
+            buzzer_triggered: false,
         }
     }
 }
@@ -134,9 +137,13 @@ async fn main(spawner: Spawner) {
     let rmt_buffer = [0u32; 25]; // (1 LED * 24 bits) + 1
     let led = SmartLedsAdapter::new(rmt.channel0, peripherals.GPIO8, rmt_buffer);
 
+    // Initialize buzzer on GPIO2
+    let buzzer = Output::new(peripherals.GPIO2, Level::Low, Default::default());
+
     spawner.spawn(gps_task(uart)).unwrap();
     spawner.spawn(proximity_check_task()).unwrap();
     spawner.spawn(led_control_task(led)).unwrap();
+    spawner.spawn(buzzer_control_task(buzzer)).unwrap();
 
     loop {
         Timer::after(Duration::from_secs(1)).await;
@@ -217,6 +224,49 @@ async fn led_control_task(mut led: LedType) {
 
             blink_state = !blink_state;
             Timer::after(Duration::from_secs(1)).await;
+        }
+    }
+}
+
+#[embassy_executor::task]
+async fn buzzer_control_task(mut buzzer: Output<'static>) {
+    const BUZZ_DURATION_MS: u64 = 100; // 100ms per buzz
+    const BUZZ_GAP_MS: u64 = 100; // 100ms gap between buzzes
+
+    loop {
+        Timer::after(Duration::from_millis(100)).await;
+
+        let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
+        let mut gps_data = gps_ref.lock().await;
+
+        if gps_data.notification.is_some() && !gps_data.buzzer_triggered {
+            // Camera detected and we haven't buzzed yet
+            defmt::info!("🔊 Camera detected - triggering buzzer!");
+
+            // Mark as triggered before buzzing to prevent re-entry
+            gps_data.buzzer_triggered = true;
+            drop(gps_data);
+
+            // First buzz
+            buzzer.set_high();
+            Timer::after(Duration::from_millis(BUZZ_DURATION_MS)).await;
+            buzzer.set_low();
+
+            // Gap between buzzes
+            Timer::after(Duration::from_millis(BUZZ_GAP_MS)).await;
+
+            // Second buzz
+            buzzer.set_high();
+            Timer::after(Duration::from_millis(BUZZ_DURATION_MS)).await;
+            buzzer.set_low();
+
+            defmt::info!("🔊 Buzzer sequence complete");
+        } else if gps_data.notification.is_none() && gps_data.buzzer_triggered {
+            // No camera detected anymore, reset the flag
+            gps_data.buzzer_triggered = false;
+            drop(gps_data);
+        } else {
+            drop(gps_data);
         }
     }
 }

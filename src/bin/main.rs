@@ -90,7 +90,7 @@ esp_bootloader_esp_idf::esp_app_desc!();
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     // Correct location for the heap allocator macro: inside main.
-    esp_alloc::heap_allocator!(32 * 1024);
+    esp_alloc::heap_allocator!(size: 32 * 1024);
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);

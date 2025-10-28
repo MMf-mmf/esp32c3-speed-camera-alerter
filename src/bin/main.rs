@@ -9,6 +9,7 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Input, InputConfig, Level, Output, Pull};
+use esp_hal::peripherals::Peripherals;
 use esp_hal::rmt::Rmt;
 use esp_hal::rng::Rng;
 use esp_hal::time::Rate;
@@ -36,12 +37,25 @@ async fn main(spawner: Spawner) {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
+    // Check RTC memory to determine boot mode
+    let boot_mode = gps::mode::get_boot_mode();
+
+    match boot_mode {
+        gps::mode::BootMode::GpsMode => {
+            esp_println::println!("=== BOOTING INTO GPS MODE ===");
+            init_gps_mode(spawner, peripherals).await;
+        }
+        gps::mode::BootMode::WifiMode => {
+            esp_println::println!("=== BOOTING INTO WIFI MODE ===");
+            init_wifi_mode(spawner, peripherals).await;
+        }
+    }
+}
+
+async fn init_gps_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
+    // Initialize embassy timer
     let timer0 = TimerGroup::new(peripherals.TIMG1);
     esp_hal_embassy::init(timer0.timer0);
-
-    // Initialize system in GPS mode
-    gps::mode::set_mode(gps::mode::SystemMode::GpsMode);
-    esp_println::println!("System starting in GPS mode");
 
     // Initialize GPS data mutex
     let gps_data_mutex = embassy_sync::mutex::Mutex::new(GpsData::default());
@@ -56,7 +70,9 @@ async fn main(spawner: Spawner) {
         InputConfig::default().with_pull(Pull::Up),
     );
 
-    spawner.spawn(gps::button::button_task(button)).unwrap();
+    spawner
+        .spawn(gps::button::button_task(button, false))
+        .unwrap();
 
     // Initialize GPS UART
     let tx_pin = peripherals.GPIO4;
@@ -76,13 +92,39 @@ async fn main(spawner: Spawner) {
     // Initialize buzzer on GPIO2
     let buzzer = Output::new(peripherals.GPIO2, Level::Low, Default::default());
 
-    // Spawn GPS tasks (will check mode internally)
+    // Spawn GPS tasks
     spawner.spawn(gps_task(uart)).unwrap();
     spawner.spawn(proximity_check_task()).unwrap();
     spawner.spawn(led_control_task(led)).unwrap();
     spawner.spawn(buzzer_control_task(buzzer)).unwrap();
 
-    // Initialize WiFi controller (but don't start it yet)
+    esp_println::println!("GPS mode initialized - Long press button to switch to WiFi mode");
+
+    // Keep main task alive
+    loop {
+        Timer::after(Duration::from_secs(60)).await;
+    }
+}
+
+async fn init_wifi_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
+    // Initialize embassy timer
+    let timer0 = TimerGroup::new(peripherals.TIMG1);
+    esp_hal_embassy::init(timer0.timer0);
+
+    // Clear the RTC boot mode so next reboot goes to GPS mode
+    gps::mode::clear_boot_mode();
+
+    // Initialize button on GPIO9 (with pull-up for active-low)
+    let button = Input::new(
+        peripherals.GPIO9,
+        InputConfig::default().with_pull(Pull::Up),
+    );
+
+    spawner
+        .spawn(gps::button::button_task(button, true))
+        .unwrap();
+
+    // Initialize WiFi controller
     let timer1 = TimerGroup::new(peripherals.TIMG0);
     let rng = Rng::new(peripherals.RNG);
     let esp_wifi_ctrl = &*gps::mk_static!(
@@ -90,60 +132,46 @@ async fn main(spawner: Spawner) {
         esp_wifi::init(timer1.timer0, rng.clone()).unwrap()
     );
 
-    // Spawn WiFi mode manager task
-    spawner
-        .spawn(wifi_mode_manager_task(esp_wifi_ctrl, peripherals.WIFI, rng))
-        .unwrap();
+    esp_println::println!("Starting WiFi AP...");
 
-    esp_println::println!("System initialized - Long press button to toggle WiFi AP mode");
-
-    // Main loop - monitor mode changes
-    loop {
-        let mode = gps::mode::MODE_CHANGE_SIGNAL.wait().await;
-        match mode {
-            gps::mode::SystemMode::GpsMode => {
-                esp_println::println!("Main: System in GPS mode");
-            }
-            gps::mode::SystemMode::WifiApMode => {
-                esp_println::println!("Main: System in WiFi AP mode - OTA updates available");
-            }
-        }
-    }
-}
-
-#[embassy_executor::task]
-async fn wifi_mode_manager_task(
-    esp_wifi_ctrl: &'static EspWifiController<'static>,
-    wifi: esp_hal::peripherals::WIFI<'static>,
-    rng: Rng,
-) {
-    // Wait for first WiFi mode request
-    while !gps::mode::is_wifi_mode() {
-        Timer::after(Duration::from_millis(100)).await;
-    }
-
-    esp_println::println!("WiFi Manager: Starting WiFi AP...");
-
-    // Get the spawner for this task
-    let spawner = embassy_executor::Spawner::for_current_executor().await;
-
-    match gps::wifi::start_wifi(esp_wifi_ctrl, wifi, rng, &spawner).await {
-        Ok(_stack) => {
-            esp_println::println!("WiFi AP started successfully!");
-
-            // Wait for shutdown request
-            while !gps::mode::is_wifi_shutdown_requested() {
-                Timer::after(Duration::from_millis(500)).await;
-            }
-
-            esp_println::println!("WiFi Manager: Shutdown requested, cleaning up...");
-            esp_hal_dhcp_server::dhcp_close();
-            Timer::after(Duration::from_secs(1)).await;
-            esp_println::println!("WiFi Manager: Stopped, returning to GPS mode");
-        }
+    let stack = match gps::wifi::start_wifi(esp_wifi_ctrl, peripherals.WIFI, rng, &spawner).await {
+        Ok(s) => s,
         Err(e) => {
             esp_println::println!("Failed to start WiFi: {:?}", e);
-            gps::mode::request_gps_mode();
+            esp_println::println!("Rebooting to GPS mode in 3 seconds...");
+            Timer::after(Duration::from_secs(3)).await;
+            esp_hal::system::software_reset();
         }
+    };
+
+    // Add delay to ensure stack is fully ready
+    Timer::after(Duration::from_millis(1000)).await;
+
+    // Initialize OTA and mark current app as valid
+    if let Err(_) = gps::ota::ota_init() {
+        esp_println::println!("OTA init failed (expected if running from factory partition)");
+    }
+
+    // Spawn OTA task
+    spawner.spawn(gps::ota::ota_task()).ok();
+
+    // Spawn web server tasks
+    let web_app = gps::web::WebApp::default();
+    for id in 0..gps::web::WEB_TASK_POOL_SIZE {
+        spawner
+            .spawn(gps::web::web_task(
+                id,
+                stack,
+                web_app.router,
+                web_app.config,
+            ))
+            .ok();
+    }
+    esp_println::println!("Web server with OTA started on http://192.168.13.37/");
+    esp_println::println!("Long press button to return to GPS mode");
+
+    // Keep main task alive
+    loop {
+        Timer::after(Duration::from_secs(60)).await;
     }
 }

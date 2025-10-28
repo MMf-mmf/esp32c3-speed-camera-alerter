@@ -4,8 +4,16 @@ use esp_hal::gpio::Input;
 const LONG_PRESS_DURATION_MS: u64 = 2000; // 2 seconds
 
 #[embassy_executor::task]
-pub async fn button_task(mut button: Input<'static>) {
-    esp_println::println!("Button task started - Long press (2s) to toggle WiFi AP mode");
+pub async fn button_task(mut button: Input<'static>, is_wifi_mode: bool) {
+    if is_wifi_mode {
+        esp_println::println!(
+            "Button task started (WiFi mode) - Long press (2s) to return to GPS mode"
+        );
+    } else {
+        esp_println::println!(
+            "Button task started (GPS mode) - Long press (2s) to switch to WiFi mode"
+        );
+    }
 
     loop {
         button.wait_for_falling_edge().await;
@@ -35,16 +43,14 @@ pub async fn button_task(mut button: Input<'static>) {
         }
 
         if long_press {
-            match crate::mode::get_mode() {
-                crate::mode::SystemMode::GpsMode => {
-                    esp_println::println!("Activating WiFi AP mode for OTA updates");
-                    crate::mode::request_wifi_mode();
-                }
-                crate::mode::SystemMode::WifiApMode => {
-                    esp_println::println!("Returning to GPS mode");
-                    crate::mode::request_gps_mode();
-                }
+            if is_wifi_mode {
+                esp_println::println!("Returning to GPS mode");
+                crate::mode::request_gps_mode_reboot();
+            } else {
+                esp_println::println!("Activating WiFi AP mode for OTA updates");
+                crate::mode::request_wifi_mode_reboot();
             }
+            // System will reboot, so we never reach here
         } else {
             esp_println::println!("Short press ignored - hold for 2s to toggle mode");
         }

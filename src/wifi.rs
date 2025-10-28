@@ -57,28 +57,6 @@ pub async fn start_wifi(
 
     spawner.spawn(dhcp_server_task(stack)).ok();
 
-    Timer::after(Duration::from_millis(1000)).await;
-
-    if let Err(_) = crate::ota::ota_init() {
-        println!("OTA init failed (expected if running from factory partition)");
-    }
-
-    spawner.spawn(crate::ota::ota_task()).ok();
-
-    let web_app = crate::web::WebApp::default();
-    for id in 0..crate::web::WEB_TASK_POOL_SIZE {
-        spawner
-            .spawn(crate::web::web_task(
-                id,
-                stack,
-                web_app.router,
-                web_app.config,
-            ))
-            .ok();
-    }
-
-    println!("Web server started on http://192.168.13.37/");
-
     Ok(stack)
 }
 
@@ -109,14 +87,6 @@ async fn connection_task(mut controller: WifiController<'static>) {
     println!("Device capabilities: {:?}", controller.capabilities());
 
     loop {
-        if crate::mode::is_wifi_shutdown_requested() {
-            println!("Connection task: Shutdown requested");
-            if matches!(controller.is_started(), Ok(true)) {
-                let _ = controller.stop_async().await;
-            }
-            return;
-        }
-
         match esp_wifi::wifi::wifi_state() {
             WifiState::ApStarted => {
                 controller.wait_for_event(WifiEvent::ApStop).await;
@@ -137,8 +107,6 @@ async fn connection_task(mut controller: WifiController<'static>) {
             controller.start_async().await.unwrap();
             println!("WiFi AP started!");
         }
-
-        Timer::after(Duration::from_millis(500)).await;
     }
 }
 

@@ -19,7 +19,7 @@ impl AppBuilder for Application {
     }
 }
 
-pub const WEB_TASK_POOL_SIZE: usize = 2;
+pub const WEB_TASK_POOL_SIZE: usize = 1;
 
 #[embassy_executor::task(pool_size = WEB_TASK_POOL_SIZE)]
 pub async fn web_task(
@@ -29,9 +29,9 @@ pub async fn web_task(
     config: &'static picoserve::Config<Duration>,
 ) -> ! {
     let port = 80;
-    let mut tcp_rx_buffer = [0; 2048];
-    let mut tcp_tx_buffer = [0; 2048];
-    let mut http_buffer = [0; 16384];
+    let mut tcp_rx_buffer = [0; 512];
+    let mut tcp_tx_buffer = [0; 512];
+    let mut http_buffer = [0; 4096];
 
     picoserve::listen_and_serve(
         id,

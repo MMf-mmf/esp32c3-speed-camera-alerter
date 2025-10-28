@@ -67,6 +67,8 @@ pub static mut GPS_DATA_REF: Option<
 
 #[embassy_executor::task]
 pub async fn led_control_task(mut led: LedType) {
+    esp_println::println!("LED control task started");
+
     const BRIGHTNESS_LOW: u8 = 10;
     const BRIGHTNESS_HIGH: u8 = 100;
     const GREEN_BLINK_INTERVAL_MS: u64 = 10000; // 10 seconds between blinks
@@ -145,6 +147,8 @@ pub async fn led_control_task(mut led: LedType) {
 
 #[embassy_executor::task]
 pub async fn buzzer_control_task(mut buzzer: Output<'static>) {
+    esp_println::println!("Buzzer control task started");
+
     const BUZZ_DURATION_MS: u64 = 100; // 100ms per buzz
     const BUZZ_GAP_MS: u64 = 100; // 100ms gap between buzzes
 
@@ -188,10 +192,13 @@ pub async fn buzzer_control_task(mut buzzer: Output<'static>) {
 
 #[embassy_executor::task]
 pub async fn proximity_check_task() {
+    esp_println::println!("Proximity check task started");
+
     const PRECISION: usize = 7;
     const DISTANCE_THRESHOLD_KM: f64 = 0.244; // 800 feet
     const HEADING_TOLERANCE_DEG: f64 = 25.0;
     const MINIMUM_SPEED_KNOTS: f32 = 7.0; // 8 mph
+
     loop {
         Timer::after(Duration::from_secs(3)).await;
 
@@ -272,6 +279,8 @@ pub async fn proximity_check_task() {
 
 #[embassy_executor::task]
 pub async fn gps_task(mut uart: Uart<'static, Async>) {
+    esp_println::println!("GPS task started");
+
     // A buffer to build the current NMEA sentence
     let mut sentence = [0u8; 128];
     let mut idx = 0;

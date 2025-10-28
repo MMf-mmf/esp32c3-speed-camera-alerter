@@ -26,7 +26,6 @@ libm = "0.2.8"
 geohash = { path = "../geohash", default-features = false }
 phf = { version = "0.11", default-features = false }
 
-
 # Embassy dependencies
 embassy-executor = { version = "0.7.0", features = [
   "defmt",

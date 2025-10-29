@@ -29,9 +29,9 @@ pub async fn web_task(
     config: &'static picoserve::Config<Duration>,
 ) -> ! {
     let port = 80;
-    let mut tcp_rx_buffer = [0; 512];
-    let mut tcp_tx_buffer = [0; 512];
-    let mut http_buffer = [0; 4096];
+    let mut tcp_rx_buffer = [0; 2048];
+    let mut tcp_tx_buffer = [0; 4096];
+    let mut http_buffer = [0; 16384];
 
     picoserve::listen_and_serve(
         id,
@@ -117,20 +117,7 @@ async fn ota_handler(
         params.is_final
     );
 
-    // Send start command only for first chunk (offset 0)
-    if params.offset == 0 {
-        crate::ota::OTA_CHANNEL
-            .send(crate::ota::OtaCommand::Start {
-                size: params.size,
-                crc: params.crc,
-            })
-            .await;
-
-        // Small delay to let OTA task initialize
-        embassy_time::Timer::after(embassy_time::Duration::from_millis(10)).await;
-    }
-
-    // Copy data to OTA buffer
+    // Copy data to OTA buffer FIRST (before any async operations)
     let buffer_guard = crate::ota::OTA_BUFFER.lock().await;
     let mut buffer = buffer_guard.borrow_mut();
     let len = data.len();
@@ -138,21 +125,30 @@ async fn ota_handler(
     drop(buffer);
     drop(buffer_guard);
 
-    // Send write command
+    // Send commands to OTA task (non-blocking channel sends)
+    if params.offset == 0 {
+        crate::ota::OTA_CHANNEL
+            .send(crate::ota::OtaCommand::Start {
+                size: params.size,
+                crc: params.crc,
+            })
+            .await;
+    }
+
     crate::ota::OTA_CHANNEL
         .send(crate::ota::OtaCommand::WriteChunk { len })
         .await;
 
-    // Send finish command only for last chunk
     if params.is_final {
         crate::ota::OTA_CHANNEL
             .send(crate::ota::OtaCommand::Finish)
             .await;
     }
 
-    // Delay before sending response to let WiFi TX queue clear
-    embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
+    // Yield to allow WiFi task to process TX queue
+    embassy_time::Timer::after(embassy_time::Duration::from_millis(5)).await;
 
+    // Return response immediately - let OTA task process asynchronously
     picoserve::response::Json(OtaResponse {
         success: true,
         message: if params.is_final { "done" } else { "ok" },

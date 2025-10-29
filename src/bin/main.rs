@@ -32,14 +32,13 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
-    esp_alloc::heap_allocator!(size: 180 * 1024);
-
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
-
+    esp_alloc::heap_allocator!(size: 170 * 1024);
     // Check RTC memory to determine boot mode
     let boot_mode = gps::mode::get_boot_mode();
 
+    // Allocate heap based on mode - WiFi needs 150KB (matching working example)
     match boot_mode {
         gps::mode::BootMode::GpsMode => {
             esp_println::println!("=== BOOTING INTO GPS MODE ===");
@@ -153,7 +152,7 @@ async fn init_wifi_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
     }
 
     // Spawn OTA task
-    spawner.spawn(gps::ota::ota_task()).ok();
+    spawner.must_spawn(gps::ota::ota_task());
 
     // Spawn web server tasks
     let web_app = gps::web::WebApp::default();

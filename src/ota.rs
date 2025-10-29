@@ -5,9 +5,9 @@ use embassy_sync::mutex::Mutex;
 use esp_hal_ota::Ota;
 use esp_storage::FlashStorage;
 
-// Shared buffer for OTA data transfer
-pub static OTA_BUFFER: Mutex<CriticalSectionRawMutex, RefCell<[u8; 8192]>> =
-    Mutex::new(RefCell::new([0u8; 8192]));
+// Shared buffer for OTA data transfer (reduced to 4KB to save DRAM)
+pub static OTA_BUFFER: Mutex<CriticalSectionRawMutex, RefCell<[u8; 4096]>> =
+    Mutex::new(RefCell::new([0u8; 4096]));
 
 pub static OTA_CHANNEL: Channel<CriticalSectionRawMutex, OtaCommand, 8> = Channel::new();
 

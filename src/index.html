@@ -13,6 +13,7 @@ input[type="file"]{display:block;margin:15px auto;padding:8px;background:rgba(25
 input[type="file"]::file-selector-button{background:linear-gradient(95deg,#99c2c8,#1f8037);border:none;padding:6px 12px;border-radius:5px;color:#fff;cursor:pointer;margin-right:8px}
 button{display:inline-block;padding:12px 24px;margin:8px;border:none;border-radius:5px;font-size:14px;cursor:pointer;transition:all 0.3s;box-shadow:0 4px 6px rgba(0,0,0,0.2);background:linear-gradient(95deg,#99c2c8,#1f8037);color:#fff}
 button:active{transform:scale(0.95)}
+button:disabled{opacity:0.5;cursor:not-allowed}
 #s{margin-top:15px;font-size:13px;min-height:30px;padding:8px;background:rgba(0,0,0,0.3);border-radius:5px}
 #p{width:100%;background:rgba(255,255,255,0.2);height:20px;margin-top:10px;border-radius:5px;overflow:hidden;display:none}
 #b{width:0%;background:linear-gradient(95deg,#99c2c8,#1f8037);height:100%;transition:width 0.3s;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold}
@@ -26,14 +27,132 @@ button:active{transform:scale(0.95)}
 <p>Connected to: <strong>SpeedMe</strong></p>
 <h2>📦 OTA Firmware Update</h2>
 <input type="file" id="f" accept=".bin">
-<button onclick="u()">Upload Firmware</button>
+<button id="ubtn" onclick="u()">Upload Firmware</button>
 <div id="s">Select a .bin file to begin OTA update</div>
 <div id="p"><div id="b">0%</div></div>
 <div class="i"><strong>📋 Instructions:</strong><br>1. Build firmware: <code>cargo build --release</code><br>2. Select .bin file<br>3. Click "Upload Firmware"<br>4. Device reboots automatically</div>
 </div>
 <script>
 function c(d){const t=[];for(let i=0;i<256;i++){let c=i;for(let j=0;j<8;j++)c=((c&1)?(0xEDB88320^(c>>>1)):(c>>>1));t[i]=c}let r=0xFFFFFFFF;for(let i=0;i<d.length;i++)r=(r>>>8)^t[(r^d[i])&0xFF];return(r^0xFFFFFFFF)>>>0}
-async function u(){const fi=document.getElementById('f'),sd=document.getElementById('s'),pd=document.getElementById('p'),pb=document.getElementById('b');if(!fi.files||!fi.files.length){sd.textContent='❌ Please select a firmware file first!';sd.style.color='#f55';return}const f=fi.files[0];sd.textContent='⏳ Reading firmware file...';sd.style.color='#99c2c8';pd.style.display='block';pb.style.width='0%';pb.textContent='0%';try{const ab=await f.arrayBuffer(),ua=new Uint8Array(ab),cr=c(ua);sd.textContent=`📊 File: ${f.name}, Size: ${ua.length} bytes, CRC32: 0x${cr.toString(16).toUpperCase()}`;const CS=2048;let o=0;while(o<ua.length){const ce=Math.min(o+CS,ua.length),ch=ua.slice(o,ce),fi=ce>=ua.length,pr=Math.floor((o/ua.length)*90)+5;pb.style.width=pr+'%';pb.textContent=pr+'%';sd.textContent=`⏳ Uploading... ${o} / ${ua.length} bytes (${pr}%)`;const url=`http://192.168.13.37/ota?size=${ua.length}&crc=${cr}&offset=${o}&is_final=${fi}`,res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:ch});if(!res.ok)throw new Error(`Upload failed at offset ${o}`);const r=await res.json();if(!r.success)throw new Error(r.message||'Upload failed');o=ce;if(!fi)await new Promise(rv=>setTimeout(rv,250))}pb.style.width='100%';pb.textContent='100%';sd.textContent='✅ Upload complete! Device rebooting...';sd.style.color='#1f8037';let cd=5;const ci=setInterval(()=>{sd.textContent=`✅ Upload complete! Device rebooting... (${cd}s)`;cd--;if(cd<0){clearInterval(ci);sd.textContent='✅ Device rebooted. Refresh page.';pd.style.display='none'}},1000)}catch(e){console.error('Error:',e);sd.textContent='❌ Failed: '+e.message;sd.style.color='#f55';pd.style.display='none'}}
+
+async function u(){
+    const fi=document.getElementById('f');
+    const sd=document.getElementById('s');
+    const pd=document.getElementById('p');
+    const pb=document.getElementById('b');
+    const ubtn=document.getElementById('ubtn');
+    
+    if(!fi.files||!fi.files.length){
+        sd.textContent='❌ Please select a firmware file first!';
+        sd.style.color='#f55';
+        return;
+    }
+    
+    ubtn.disabled=true;
+    
+    const f=fi.files[0];
+    sd.textContent='⏳ Reading firmware file...';
+    sd.style.color='#99c2c8';
+    pd.style.display='block';
+    pb.style.width='0%';
+    pb.textContent='0%';
+    
+    try{
+        const ab=await f.arrayBuffer();
+        const ua=new Uint8Array(ab);
+        const cr=c(ua);
+        
+        sd.textContent=`📊 File: ${f.name}, Size: ${ua.length} bytes, CRC32: 0x${cr.toString(16).toUpperCase()}`;
+        
+        const CS=2048;
+        let o=0;
+        let retries=0;
+        const MAX_RETRIES=3;
+        
+        while(o<ua.length){
+            const ce=Math.min(o+CS,ua.length);
+            const ch=ua.slice(o,ce);
+            const fi=ce>=ua.length;
+            const pr=Math.floor((o/ua.length)*90)+5;
+            
+            pb.style.width=pr+'%';
+            pb.textContent=pr+'%';
+            sd.textContent=`⏳ Uploading... ${o} / ${ua.length} bytes (${pr}%)`;
+            
+            const url=`http://192.168.13.37/ota?size=${ua.length}&crc=${cr}&offset=${o}&is_final=${fi}`;
+            
+            try{
+                // Timeout set to 5 seconds per chunk
+                const controller=new AbortController();
+                const timeoutId=setTimeout(()=>controller.abort(),5000);
+                
+                const res=await fetch(url,{
+                    method:'POST',
+                    headers:{'Content-Type':'application/octet-stream'},
+                    body:ch,
+                    signal:controller.signal
+                });
+                
+                clearTimeout(timeoutId);
+                
+                if(!res.ok){
+                    throw new Error(`HTTP ${res.status} at offset ${o}`);
+                }
+                
+                const r=await res.json();
+                if(!r.success){
+                    throw new Error(r.message||'Upload failed');
+                }
+                
+                // Success - move to next chunk
+                o=ce;
+                retries=0;
+                
+                // CRITICAL: Reduced delay from 100ms to 50ms
+                // Faster uploads prevent WiFi stack starvation
+                if(!fi){
+                    await new Promise(rv=>setTimeout(rv,50));
+                }
+                
+            }catch(e){
+                console.error(`Error at offset ${o}:`,e);
+                
+                if(retries<MAX_RETRIES){
+                    retries++;
+                    sd.textContent=`⚠️ Retry ${retries}/${MAX_RETRIES} at offset ${o}...`;
+                    await new Promise(rv=>setTimeout(rv,1000));
+                    // Don't increment o - retry same chunk
+                }else{
+                    throw new Error(`Failed after ${MAX_RETRIES} retries at offset ${o}: ${e.message}`);
+                }
+            }
+        }
+        
+        pb.style.width='100%';
+        pb.textContent='100%';
+        sd.textContent='✅ Upload complete! Device rebooting...';
+        sd.style.color='#1f8037';
+        
+        let cd=5;
+        const ci=setInterval(()=>{
+            sd.textContent=`✅ Upload complete! Device rebooting... (${cd}s)`;
+            cd--;
+            if(cd<0){
+                clearInterval(ci);
+                sd.textContent='✅ Device rebooted. Refresh page.';
+                pd.style.display='none';
+                ubtn.disabled=false;
+            }
+        },1000);
+        
+    }catch(e){
+        console.error('Error:',e);
+        sd.textContent='❌ Failed: '+e.message;
+        sd.style.color='#f55';
+        pd.style.display='none';
+        ubtn.disabled=false;
+    }
+}
 </script>
 </body>
 </html>

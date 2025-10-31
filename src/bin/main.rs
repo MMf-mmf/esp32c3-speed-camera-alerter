@@ -143,7 +143,7 @@ async fn init_wifi_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
         }
     };
 
-    // Add delay to ensure stack is fully ready
+    // FIXED: Add delay to ensure stack is fully ready (matching working example)
     Timer::after(Duration::from_millis(1000)).await;
 
     // Initialize OTA and mark current app as valid
@@ -154,17 +154,15 @@ async fn init_wifi_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
     // Spawn OTA task
     spawner.must_spawn(gps::ota::ota_task());
 
-    // Spawn web server tasks
+    // FIXED: Spawn web server tasks with proper loop for pool size
     let web_app = gps::web::WebApp::default();
     for id in 0..gps::web::WEB_TASK_POOL_SIZE {
-        spawner
-            .spawn(gps::web::web_task(
-                id,
-                stack,
-                web_app.router,
-                web_app.config,
-            ))
-            .ok();
+        spawner.must_spawn(gps::web::web_task(
+            id,
+            stack,
+            web_app.router,
+            web_app.config,
+        ));
     }
     esp_println::println!("Web server with OTA started on http://192.168.13.37/");
     esp_println::println!("Long press button to return to GPS mode");

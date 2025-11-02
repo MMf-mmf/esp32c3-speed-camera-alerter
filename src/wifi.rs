@@ -10,7 +10,6 @@ use esp_hal_dhcp_server::{
     simple_leaser::SimpleDhcpLeaser, structs::DhcpServerConfig, Ipv4Addr as DhcpIpv4Addr,
 };
 use esp_println as _;
-use esp_println::println;
 use esp_wifi::wifi::{self, WifiController, WifiDevice, WifiEvent, WifiState};
 use esp_wifi::EspWifiController;
 
@@ -61,7 +60,7 @@ pub async fn start_wifi(
 }
 
 async fn wait_for_connection(stack: Stack<'_>) {
-    println!("Waiting for link to be up");
+    defmt::info!("Waiting for link to be up");
     loop {
         if stack.is_link_up() {
             break;
@@ -69,8 +68,8 @@ async fn wait_for_connection(stack: Stack<'_>) {
         Timer::after(Duration::from_millis(500)).await;
     }
 
-    println!("Connect to AP `{}` with password `{}`", SSID, PASSWORD);
-    println!("Then browse to http://{}/", GATEWAY_IP);
+    defmt::info!("Connect to AP `{}` with password `{}`", SSID, PASSWORD);
+    defmt::info!("Then browse to http://{}/", GATEWAY_IP);
 
     while !stack.is_config_up() {
         Timer::after(Duration::from_millis(100)).await
@@ -78,13 +77,13 @@ async fn wait_for_connection(stack: Stack<'_>) {
 
     stack
         .config_v4()
-        .inspect(|c| println!("IPv4 config: {c:?}"));
+        .inspect(|c| defmt::info!("IPv4 config: {:?}", c));
 }
 
 #[embassy_executor::task]
 async fn connection_task(mut controller: WifiController<'static>) {
-    println!("WiFi connection task started");
-    println!("Device capabilities: {:?}", controller.capabilities());
+    defmt::info!("WiFi connection task started");
+    defmt::info!("Device capabilities: {:?}", controller.capabilities());
 
     loop {
         match esp_wifi::wifi::wifi_state() {
@@ -103,9 +102,9 @@ async fn connection_task(mut controller: WifiController<'static>) {
                 ..Default::default()
             });
             controller.set_configuration(&client_config).unwrap();
-            println!("Starting WiFi AP");
+            defmt::info!("Starting WiFi AP");
             controller.start_async().await.unwrap();
-            println!("WiFi AP started!");
+            defmt::info!("WiFi AP started!");
         }
     }
 }
@@ -117,7 +116,7 @@ async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
 
 #[embassy_executor::task]
 async fn dhcp_server_task(stack: Stack<'static>) {
-    println!("Starting DHCP server...");
+    defmt::info!("Starting DHCP server...");
 
     let config = DhcpServerConfig {
         ip: DhcpIpv4Addr::new(192, 168, 13, 37),
@@ -134,12 +133,12 @@ async fn dhcp_server_task(stack: Stack<'static>) {
         leases: Default::default(),
     };
 
-    println!("DHCP server: Assigning IPs from 192.168.13.50 to 192.168.13.200");
+    defmt::info!("DHCP server: Assigning IPs from 192.168.13.50 to 192.168.13.200");
 
     let res = esp_hal_dhcp_server::run_dhcp_server(stack, config, &mut leaser).await;
     if let Err(e) = res {
-        println!("DHCP SERVER ERROR: {e:?}");
+        defmt::error!("DHCP SERVER ERROR: {:?}", e);
     }
 
-    println!("DHCP server task ended");
+    defmt::info!("DHCP server task ended");
 }

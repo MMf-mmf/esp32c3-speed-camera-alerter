@@ -24,7 +24,7 @@ use gps::gps::{GpsData, GPS_DATA_CELL, GPS_DATA_REF};
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    esp_println::println!("{}", info);
+    defmt::error!("PANIC: {}", defmt::Display2Format(info));
     loop {}
 }
 
@@ -41,11 +41,11 @@ async fn main(spawner: Spawner) {
     // Allocate heap based on mode - WiFi needs 150KB (matching working example)
     match boot_mode {
         gps::mode::BootMode::GpsMode => {
-            esp_println::println!("=== BOOTING INTO GPS MODE ===");
+            defmt::info!("=== BOOTING INTO GPS MODE ===");
             init_gps_mode(spawner, peripherals).await;
         }
         gps::mode::BootMode::WifiMode => {
-            esp_println::println!("=== BOOTING INTO WIFI MODE ===");
+            defmt::info!("=== BOOTING INTO WIFI MODE ===");
             init_wifi_mode(spawner, peripherals).await;
         }
     }
@@ -97,7 +97,7 @@ async fn init_gps_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
     spawner.spawn(led_control_task(led)).unwrap();
     spawner.spawn(buzzer_control_task(buzzer)).unwrap();
 
-    esp_println::println!("GPS mode initialized - Long press button to switch to WiFi mode");
+    defmt::info!("GPS mode initialized - Long press button to switch to WiFi mode");
 
     // Keep main task alive
     loop {
@@ -131,13 +131,13 @@ async fn init_wifi_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
         esp_wifi::init(timer1.timer0, rng.clone()).unwrap()
     );
 
-    esp_println::println!("Starting WiFi AP...");
+    defmt::info!("Starting WiFi AP...");
 
     let stack = match gps::wifi::start_wifi(esp_wifi_ctrl, peripherals.WIFI, rng, &spawner).await {
         Ok(s) => s,
         Err(e) => {
-            esp_println::println!("Failed to start WiFi: {:?}", e);
-            esp_println::println!("Rebooting to GPS mode in 3 seconds...");
+            defmt::error!("Failed to start WiFi: {}", defmt::Debug2Format(&e));
+            defmt::info!("Rebooting to GPS mode in 3 seconds...");
             Timer::after(Duration::from_secs(3)).await;
             esp_hal::system::software_reset();
         }
@@ -148,7 +148,7 @@ async fn init_wifi_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
 
     // Initialize OTA and mark current app as valid
     if let Err(_) = gps::ota::ota_init() {
-        esp_println::println!("OTA init failed (expected if running from factory partition)");
+        defmt::warn!("OTA init failed (expected if running from factory partition)");
     }
 
     // Spawn OTA task
@@ -164,8 +164,8 @@ async fn init_wifi_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
             web_app.config,
         ));
     }
-    esp_println::println!("Web server with OTA started on http://192.168.13.37/");
-    esp_println::println!("Long press button to return to GPS mode");
+    defmt::info!("Web server with OTA started on http://192.168.13.37/");
+    defmt::info!("Long press button to return to GPS mode");
 
     // Keep main task alive
     loop {

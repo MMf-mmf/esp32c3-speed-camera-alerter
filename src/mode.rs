@@ -14,10 +14,10 @@ pub fn get_boot_mode() -> BootMode {
     let value = rtc_cntl.store0().read().bits();
 
     if value == WIFI_MODE_MAGIC {
-        esp_println::println!("RTC: WiFi mode magic number detected (0x{:08X})", value);
+        defmt::info!("RTC: WiFi mode magic number detected (0x{:08X})", value);
         BootMode::WifiMode
     } else {
-        esp_println::println!(
+        defmt::info!(
             "RTC: No magic number (0x{:08X}), defaulting to GPS mode",
             value
         );
@@ -29,18 +29,18 @@ pub fn get_boot_mode() -> BootMode {
 pub fn clear_boot_mode() {
     let rtc_cntl = unsafe { &*esp_hal::peripherals::LPWR::PTR };
     rtc_cntl.store0().write(|w| unsafe { w.bits(0) });
-    esp_println::println!("RTC: Boot mode cleared");
+    defmt::info!("RTC: Boot mode cleared");
 }
 
 /// Set WiFi mode for next boot and trigger software reset
 pub fn request_wifi_mode_reboot() {
-    esp_println::println!("Mode: Setting WiFi mode for next boot...");
+    defmt::info!("Mode: Setting WiFi mode for next boot...");
 
     let rtc_cntl = unsafe { &*esp_hal::peripherals::LPWR::PTR };
 
     // Read current value before writing
     let before = rtc_cntl.store0().read().bits();
-    esp_println::println!("Mode: STORE0 before write: 0x{:08X}", before);
+    defmt::info!("Mode: STORE0 before write: 0x{:08X}", before);
 
     rtc_cntl
         .store0()
@@ -48,19 +48,19 @@ pub fn request_wifi_mode_reboot() {
 
     // Read back to verify write
     let after = rtc_cntl.store0().read().bits();
-    esp_println::println!("Mode: STORE0 after write: 0x{:08X}", after);
+    defmt::info!("Mode: STORE0 after write: 0x{:08X}", after);
 
     // Small delay to ensure write completes
     for _ in 0..1000 {
         unsafe { core::arch::asm!("nop") };
     }
 
-    esp_println::println!("Mode: Rebooting to WiFi mode...");
+    defmt::info!("Mode: Rebooting to WiFi mode...");
     esp_hal::system::software_reset();
 }
 
 /// Trigger software reset to return to GPS mode (RTC already cleared)
 pub fn request_gps_mode_reboot() {
-    esp_println::println!("Mode: Rebooting to GPS mode...");
+    defmt::info!("Mode: Rebooting to GPS mode...");
     esp_hal::system::software_reset();
 }

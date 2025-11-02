@@ -111,7 +111,7 @@ async fn ota_handler(
     let params = query.0;
     let data = &body.data;
 
-    esp_println::println!(
+    defmt::info!(
         "OTA request: offset={}, len={}, final={}",
         params.offset,
         data.len(),

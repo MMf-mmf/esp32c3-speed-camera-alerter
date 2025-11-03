@@ -3,155 +3,203 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ESP32 OTA</title>
+<title>Device Update</title>
 <style>
-body{display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;font-family:Arial,sans-serif;background:linear-gradient(135deg,#000,#434343);color:#fff}
-.container{text-align:center;padding:30px;background:rgba(255,255,255,0.1);border-radius:15px;box-shadow:0 8px 32px rgba(0,0,0,0.3);backdrop-filter:blur(10px);max-width:500px;width:90%}
-h1{margin-bottom:10px;font-size:24px}
-h2{margin-top:20px;margin-bottom:10px;font-size:18px;color:#99c2c8}
-input[type="file"]{display:block;margin:15px auto;padding:8px;background:rgba(255,255,255,0.2);border:2px solid rgba(255,255,255,0.3);border-radius:5px;color:#fff;cursor:pointer;width:100%;max-width:300px}
-input[type="file"]::file-selector-button{background:linear-gradient(95deg,#99c2c8,#1f8037);border:none;padding:6px 12px;border-radius:5px;color:#fff;cursor:pointer;margin-right:8px}
-button{display:inline-block;padding:12px 24px;margin:8px;border:none;border-radius:5px;font-size:14px;cursor:pointer;transition:all 0.3s;box-shadow:0 4px 6px rgba(0,0,0,0.2);background:linear-gradient(95deg,#99c2c8,#1f8037);color:#fff}
-button:active{transform:scale(0.95)}
-button:disabled{opacity:0.5;cursor:not-allowed}
-#s{margin-top:15px;font-size:13px;min-height:30px;padding:8px;background:rgba(0,0,0,0.3);border-radius:5px}
-#p{width:100%;background:rgba(255,255,255,0.2);height:20px;margin-top:10px;border-radius:5px;overflow:hidden;display:none}
-#b{width:0%;background:linear-gradient(95deg,#99c2c8,#1f8037);height:100%;transition:width 0.3s;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold}
-.i{margin-top:15px;padding:12px;background:rgba(255,255,255,0.05);border-radius:5px;font-size:12px;text-align:left}
-.i strong{color:#99c2c8}
+*{margin:0;padding:0;box-sizing:border-box}
+body{display:flex;justify-content:center;align-items:center;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);padding:20px}
+.container{text-align:center;padding:40px;background:#fff;border-radius:20px;box-shadow:0 20px 60px rgba(0,0,0,0.3);max-width:500px;width:100%}
+.logo{font-size:48px;margin-bottom:10px}
+h1{color:#333;font-size:28px;margin-bottom:8px;font-weight:600}
+.subtitle{color:#666;font-size:14px;margin-bottom:30px}
+.section{margin:25px 0;padding:20px;background:#f8f9fa;border-radius:12px}
+.section-title{color:#333;font-size:16px;font-weight:600;margin-bottom:15px;display:flex;align-items:center;justify-content:center;gap:8px}
+input[type="file"]{display:none}
+.file-label{display:block;margin:0 auto 15px;padding:12px 24px;background:#fff;border:2px dashed #667eea;border-radius:8px;color:#667eea;cursor:pointer;transition:all 0.3s;font-weight:500}
+.file-label:hover{border-color:#764ba2;color:#764ba2;transform:translateY(-2px)}
+.file-name{font-size:13px;color:#666;margin-top:8px;min-height:20px}
+button{width:100%;padding:14px;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;transition:all 0.3s;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;box-shadow:0 4px 15px rgba(102,126,234,0.4)}
+button:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(102,126,234,0.6)}
+button:active{transform:translateY(0)}
+button:disabled{opacity:0.6;cursor:not-allowed;transform:none}
+#s{margin-top:20px;font-size:14px;min-height:24px;padding:12px;border-radius:8px;font-weight:500}
+.status-default{background:#f8f9fa;color:#666}
+.status-progress{background:#e3f2fd;color:#1976d2}
+.status-success{background:#e8f5e9;color:#2e7d32}
+.status-error{background:#ffebee;color:#c62828}
+#p{width:100%;background:#e0e0e0;height:8px;margin-top:15px;border-radius:4px;overflow:hidden;display:none}
+#b{width:0%;background:linear-gradient(90deg,#667eea 0%,#764ba2 100%);height:100%;transition:width 0.3s;border-radius:4px}
+.progress-text{font-size:12px;color:#666;margin-top:8px;display:none}
+.info{margin-top:25px;padding:20px;background:#f8f9fa;border-radius:12px;text-align:left;font-size:13px;line-height:1.8;color:#666}
+.info-title{font-weight:600;color:#333;margin-bottom:12px;font-size:14px}
+.info ul{list-style:none;padding-left:0}
+.info li{padding:6px 0;padding-left:24px;position:relative}
+.info li:before{content:"✓";position:absolute;left:0;color:#667eea;font-weight:bold}
 </style>
 </head>
 <body>
 <div class="container">
-<h1>🛜 ESP32 Access Point</h1>
-<p>Connected to: <strong>SpeedMe</strong></p>
-<h2>📦 OTA Firmware Update</h2>
-<input type="file" id="f" accept=".bin">
-<button id="ubtn" onclick="u()">Upload Firmware</button>
-<div id="s">Select a .bin file to begin OTA update</div>
-<div id="p"><div id="b">0%</div></div>
-<div class="i"><strong>📋 Instructions:</strong><br>1. Build firmware: <code>cargo build --release</code><br>2. Select .bin file<br>3. Click "Upload Firmware"<br>4. Device reboots automatically</div>
+<div class="logo">🔄</div>
+<h1>Software Update</h1>
+<p class="subtitle">Keep your device up to date with the latest features</p>
+
+<div class="section">
+<div class="section-title">
+<span>📦</span>
+<span>Select Update File</span>
 </div>
+<label for="f" class="file-label" id="fl">Choose Update File (.bin)</label>
+<input type="file" id="f" accept=".bin" onchange="showFileName()">
+<div class="file-name" id="fn"></div>
+<button id="ubtn" onclick="u()">Install Update</button>
+</div>
+
+<div id="s" class="status-default">Ready to install update</div>
+<div id="p">
+<div id="b"></div>
+</div>
+<div class="progress-text" id="pt"></div>
+
+<div class="info">
+<div class="info-title">What happens during update?</div>
+<ul>
+<li>Your device will install the new software</li>
+<li>The process takes about 2-5 minutes</li>
+<li>Your device will restart automatically</li>
+<li>All your settings will be preserved</li>
+</ul>
+</div>
+</div>
+
 <script>
+function showFileName(){
+const fi=document.getElementById('f');
+const fn=document.getElementById('fn');
+const fl=document.getElementById('fl');
+if(fi.files&&fi.files.length){
+fn.textContent='📄 '+fi.files[0].name;
+fl.textContent='Change File';
+}else{
+fn.textContent='';
+fl.textContent='Choose Update File (.bin)';
+}
+}
+
 function c(d){const t=[];for(let i=0;i<256;i++){let c=i;for(let j=0;j<8;j++)c=((c&1)?(0xEDB88320^(c>>>1)):(c>>>1));t[i]=c}let r=0xFFFFFFFF;for(let i=0;i<d.length;i++)r=(r>>>8)^t[(r^d[i])&0xFF];return(r^0xFFFFFFFF)>>>0}
 
 async function u(){
-    const fi=document.getElementById('f');
-    const sd=document.getElementById('s');
-    const pd=document.getElementById('p');
-    const pb=document.getElementById('b');
-    const ubtn=document.getElementById('ubtn');
-    
-    if(!fi.files||!fi.files.length){
-        sd.textContent='❌ Please select a firmware file first!';
-        sd.style.color='#f55';
-        return;
-    }
-    
-    ubtn.disabled=true;
-    
-    const f=fi.files[0];
-    sd.textContent='⏳ Reading firmware file...';
-    sd.style.color='#99c2c8';
-    pd.style.display='block';
-    pb.style.width='0%';
-    pb.textContent='0%';
-    
-    try{
-        const ab=await f.arrayBuffer();
-        const ua=new Uint8Array(ab);
-        const cr=c(ua);
-        
-        sd.textContent=`📊 File: ${f.name}, Size: ${ua.length} bytes, CRC32: 0x${cr.toString(16).toUpperCase()}`;
-        
-        const CS=2048;
-        let o=0;
-        let retries=0;
-        const MAX_RETRIES=3;
-        
-        while(o<ua.length){
-            const ce=Math.min(o+CS,ua.length);
-            const ch=ua.slice(o,ce);
-            const fi=ce>=ua.length;
-            const pr=Math.floor((o/ua.length)*90)+5;
-            
-            pb.style.width=pr+'%';
-            pb.textContent=pr+'%';
-            sd.textContent=`⏳ Uploading... ${o} / ${ua.length} bytes (${pr}%)`;
-            
-            const url=`http://192.168.13.37/ota?size=${ua.length}&crc=${cr}&offset=${o}&is_final=${fi}`;
-            
-            try{
-                // Timeout set to 5 seconds per chunk
-                const controller=new AbortController();
-                const timeoutId=setTimeout(()=>controller.abort(),5000);
-                
-                const res=await fetch(url,{
-                    method:'POST',
-                    headers:{'Content-Type':'application/octet-stream'},
-                    body:ch,
-                    signal:controller.signal
-                });
-                
-                clearTimeout(timeoutId);
-                
-                if(!res.ok){
-                    throw new Error(`HTTP ${res.status} at offset ${o}`);
-                }
-                
-                const r=await res.json();
-                if(!r.success){
-                    throw new Error(r.message||'Upload failed');
-                }
-                
-                // Success - move to next chunk
-                o=ce;
-                retries=0;
-                
-                // CRITICAL: Reduced delay from 100ms to 50ms
-                // Faster uploads prevent WiFi stack starvation
-                if(!fi){
-                    await new Promise(rv=>setTimeout(rv,50));
-                }
-                
-            }catch(e){
-                console.error(`Error at offset ${o}:`,e);
-                
-                if(retries<MAX_RETRIES){
-                    retries++;
-                    sd.textContent=`⚠️ Retry ${retries}/${MAX_RETRIES} at offset ${o}...`;
-                    await new Promise(rv=>setTimeout(rv,1000));
-                    // Don't increment o - retry same chunk
-                }else{
-                    throw new Error(`Failed after ${MAX_RETRIES} retries at offset ${o}: ${e.message}`);
-                }
-            }
-        }
-        
-        pb.style.width='100%';
-        pb.textContent='100%';
-        sd.textContent='✅ Upload complete! Device rebooting...';
-        sd.style.color='#1f8037';
-        
-        let cd=5;
-        const ci=setInterval(()=>{
-            sd.textContent=`✅ Upload complete! Device rebooting... (${cd}s)`;
-            cd--;
-            if(cd<0){
-                clearInterval(ci);
-                sd.textContent='✅ Device rebooted. Refresh page.';
-                pd.style.display='none';
-                ubtn.disabled=false;
-            }
-        },1000);
-        
-    }catch(e){
-        console.error('Error:',e);
-        sd.textContent='❌ Failed: '+e.message;
-        sd.style.color='#f55';
-        pd.style.display='none';
-        ubtn.disabled=false;
-    }
+const fi=document.getElementById('f');
+const sd=document.getElementById('s');
+const pd=document.getElementById('p');
+const pb=document.getElementById('b');
+const pt=document.getElementById('pt');
+const ubtn=document.getElementById('ubtn');
+
+if(!fi.files||!fi.files.length){
+sd.textContent='Please select an update file first';
+sd.className='status-error';
+return;
+}
+
+ubtn.disabled=true;
+
+const f=fi.files[0];
+sd.textContent='Preparing update...';
+sd.className='status-progress';
+pd.style.display='block';
+pt.style.display='block';
+pb.style.width='0%';
+pt.textContent='';
+
+try{
+const ab=await f.arrayBuffer();
+const ua=new Uint8Array(ab);
+const cr=c(ua);
+
+const CS=2048;
+let o=0;
+let retries=0;
+const MAX_RETRIES=3;
+
+while(o<ua.length){
+const ce=Math.min(o+CS,ua.length);
+const ch=ua.slice(o,ce);
+const fi=ce>=ua.length;
+const pr=Math.floor((o/ua.length)*90)+5;
+
+pb.style.width=pr+'%';
+pt.textContent=pr+'% complete';
+sd.textContent='Installing update... Please wait';
+
+const url=`http://192.168.13.37/ota?size=${ua.length}&crc=${cr}&offset=${o}&is_final=${fi}`;
+
+try{
+const controller=new AbortController();
+const timeoutId=setTimeout(()=>controller.abort(),5000);
+
+const res=await fetch(url,{
+method:'POST',
+headers:{'Content-Type':'application/octet-stream'},
+body:ch,
+signal:controller.signal
+});
+
+clearTimeout(timeoutId);
+
+if(!res.ok){
+throw new Error(`Connection error at ${Math.floor(o/ua.length*100)}%`);
+}
+
+const r=await res.json();
+if(!r.success){
+throw new Error(r.message||'Update failed');
+}
+
+o=ce;
+retries=0;
+
+if(!fi){
+await new Promise(rv=>setTimeout(rv,50));
+}
+
+}catch(e){
+console.error(`Error at offset ${o}:`,e);
+
+if(retries<MAX_RETRIES){
+retries++;
+sd.textContent=`Retrying... (${retries}/${MAX_RETRIES})`;
+await new Promise(rv=>setTimeout(rv,1000));
+}else{
+throw new Error(`Update failed: ${e.message}`);
+}
+}
+}
+
+pb.style.width='100%';
+pt.textContent='100% complete';
+sd.textContent='Update successful! Device restarting...';
+sd.className='status-success';
+
+let cd=5;
+const ci=setInterval(()=>{
+sd.textContent=`Update complete! Restarting in ${cd} seconds...`;
+cd--;
+if(cd<0){
+clearInterval(ci);
+sd.textContent='Update complete! Please restart devise.';
+pd.style.display='none';
+pt.style.display='none';
+ubtn.disabled=false;
+}
+},1000);
+
+}catch(e){
+console.error('Error:',e);
+sd.textContent='Update failed: '+e.message;
+sd.className='status-error';
+pd.style.display='none';
+pt.style.display='none';
+ubtn.disabled=false;
+}
 }
 </script>
 </body>

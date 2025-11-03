@@ -10,9 +10,9 @@ use embassy_time::{Duration, Timer};
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
 use esp_hal::peripherals::Peripherals;
-use esp_hal::rmt::Rmt;
+// use esp_hal::rmt::Rmt;
 use esp_hal::rng::Rng;
-use esp_hal::time::Rate;
+// use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::uart::{Config, Uart};
 // use esp_hal_smartled::SmartLedsAdapter;
@@ -34,11 +34,10 @@ esp_bootloader_esp_idf::esp_app_desc!();
 async fn main(spawner: Spawner) {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
-    esp_alloc::heap_allocator!(size: 100 * 1024);
+    esp_alloc::heap_allocator!(size: 170 * 1024);
     // Check RTC memory to determine boot mode
     let boot_mode = gps::mode::get_boot_mode();
 
-    // Allocate heap based on mode - WiFi needs 150KB (matching working example)
     match boot_mode {
         gps::mode::BootMode::GpsMode => {
             defmt::info!("=== BOOTING INTO GPS MODE ===");
@@ -84,11 +83,11 @@ async fn init_gps_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
         .into_async();
 
     // Initialize RMT for LED control
-    let rmt: Rmt<'_, esp_hal::Blocking> =
-        Rmt::new(peripherals.RMT, Rate::from_mhz(80)).expect("Failed to initialize RMT");
-    let rmt_buffer = [0u32; 25];
+    // let rmt: Rmt<'_, esp_hal::Blocking> =
+    //     Rmt::new(peripherals.RMT, Rate::from_mhz(80)).expect("Failed to initialize RMT");
+    // let rmt_buffer = [0u32; 25];
     // let led = SmartLedsAdapter::new(rmt.channel0, peripherals.GPIO8, rmt_buffer);
-    let mut led = Output::new(peripherals.GPIO3, Level::Low, OutputConfig::default());
+    let led = Output::new(peripherals.GPIO3, Level::Low, OutputConfig::default());
 
     // Initialize buzzer on GPIO2
     let buzzer = Output::new(peripherals.GPIO2, Level::Low, Default::default());

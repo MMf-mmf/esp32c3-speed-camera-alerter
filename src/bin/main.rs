@@ -8,14 +8,14 @@ use esp_alloc as _;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use esp_hal::clock::CpuClock;
-use esp_hal::gpio::{Input, InputConfig, Level, Output, Pull};
+use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
 use esp_hal::peripherals::Peripherals;
 use esp_hal::rmt::Rmt;
 use esp_hal::rng::Rng;
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::uart::{Config, Uart};
-use esp_hal_smartled::SmartLedsAdapter;
+// use esp_hal_smartled::SmartLedsAdapter;
 use esp_println as _;
 use esp_wifi::EspWifiController;
 
@@ -34,7 +34,7 @@ esp_bootloader_esp_idf::esp_app_desc!();
 async fn main(spawner: Spawner) {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
-    esp_alloc::heap_allocator!(size: 170 * 1024);
+    esp_alloc::heap_allocator!(size: 100 * 1024);
     // Check RTC memory to determine boot mode
     let boot_mode = gps::mode::get_boot_mode();
 
@@ -63,9 +63,9 @@ async fn init_gps_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
         GPS_DATA_REF = Some(gps_data_ref);
     }
 
-    // Initialize button on GPIO9 (with pull-up for active-low)
+    // TODO: Initialize button on GPIO10 (with pull-up for active-low)
     let button = Input::new(
-        peripherals.GPIO9,
+        peripherals.GPIO10, // 9 for normal
         InputConfig::default().with_pull(Pull::Up),
     );
 
@@ -74,8 +74,8 @@ async fn init_gps_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
         .unwrap();
 
     // Initialize GPS UART
-    let tx_pin = peripherals.GPIO4;
-    let rx_pin = peripherals.GPIO5;
+    let tx_pin = peripherals.GPIO20; // 4 for normal
+    let rx_pin = peripherals.GPIO21; // 5 for normal
     let uart_config = Config::default().with_baudrate(9600);
     let uart = Uart::new(peripherals.UART1, uart_config)
         .expect("UART initialization failed")
@@ -84,9 +84,11 @@ async fn init_gps_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
         .into_async();
 
     // Initialize RMT for LED control
-    let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80)).expect("Failed to initialize RMT");
+    let rmt: Rmt<'_, esp_hal::Blocking> =
+        Rmt::new(peripherals.RMT, Rate::from_mhz(80)).expect("Failed to initialize RMT");
     let rmt_buffer = [0u32; 25];
-    let led = SmartLedsAdapter::new(rmt.channel0, peripherals.GPIO8, rmt_buffer);
+    // let led = SmartLedsAdapter::new(rmt.channel0, peripherals.GPIO8, rmt_buffer);
+    let mut led = Output::new(peripherals.GPIO3, Level::Low, OutputConfig::default());
 
     // Initialize buzzer on GPIO2
     let buzzer = Output::new(peripherals.GPIO2, Level::Low, Default::default());

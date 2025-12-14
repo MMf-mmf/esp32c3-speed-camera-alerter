@@ -10,12 +10,12 @@ use esp_hal_smartled::SmartLedsAdapter;
 use geohash::{encode, Coord, Direction};
 use heapless::String as HString;
 use libm::{atan2, cos, sin, sqrt};
-// use smart_leds::RGB8;
-// use smart_leds::{brightness, gamma, SmartLedsWrite};
+use smart_leds::RGB8;
+use smart_leds::{brightness, gamma, SmartLedsWrite};
 use static_cell::StaticCell;
 
 // Type alias for the LED adapter
-pub type LedType = SmartLedsAdapter<esp_hal::rmt::ConstChannelAccess<esp_hal::rmt::Tx, 0>, 25>;
+pub type LedType = SmartLedsAdapter<esp_hal::rmt::ConstChannelAccess<esp_hal::rmt::Tx, 0>, 75>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Coordinates {
@@ -66,119 +66,119 @@ pub static mut GPS_DATA_REF: Option<
 > = None;
 
 // Simplified led_control_task for a single LED
-#[embassy_executor::task]
-pub async fn led_control_task(mut led: Output<'static>) {
-    defmt::info!("Simple LED control task started");
-
-    let mut blink_state = false;
-
-    loop {
-        let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
-        let gps_data = gps_ref.lock().await;
-
-        if gps_data.notification.is_some() {
-            // State 1: Heading to camera - LED ON continuously
-            led.set_high();
-            drop(gps_data);
-            Timer::after(Duration::from_millis(500)).await;
-        } else if gps_data.valid {
-            // State 2: GPS fix - LED OFF (all good, no indication needed)
-            led.set_low();
-            drop(gps_data);
-            Timer::after(Duration::from_secs(1)).await;
-        } else {
-            // State 3: No GPS fix - Fast blink (500ms on/500ms off)
-            drop(gps_data);
-
-            if blink_state {
-                led.set_high();
-            } else {
-                led.set_low();
-            }
-            blink_state = !blink_state;
-            Timer::after(Duration::from_millis(500)).await;
-        }
-    }
-}
 // #[embassy_executor::task]
-// pub async fn led_control_task(mut led: LedType) {
-//     defmt::info!("LED control task started");
-
-//     const BRIGHTNESS_LOW: u8 = 10;
-//     const BRIGHTNESS_HIGH: u8 = 100;
-//     const GREEN_BLINK_INTERVAL_MS: u64 = 10000; // 10 seconds between blinks
-//     const GREEN_BLINK_DURATION_MS: u64 = 200; // 200ms blink duration
-
-//     let color_red = RGB8 { r: 255, g: 0, b: 0 };
-//     let color_green = RGB8 { r: 0, g: 255, b: 0 };
-//     let color_yellow = RGB8 {
-//         r: 255,
-//         g: 255,
-//         b: 0,
-//     };
-//     let color_off = RGB8 { r: 0, g: 0, b: 0 };
+// pub async fn led_control_task(mut led: Output<'static>) {
+//     defmt::info!("Simple LED control task started");
 
 //     let mut blink_state = false;
-//     let mut green_timer_ms: u64 = 0;
 
 //     loop {
 //         let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
 //         let gps_data = gps_ref.lock().await;
 
 //         if gps_data.notification.is_some() {
-//             // State 1: Heading to camera - RED at high brightness (continuous)
-//             led.write(brightness(
-//                 gamma(core::iter::once(color_red)),
-//                 BRIGHTNESS_HIGH,
-//             ))
-//             .ok();
+//             // State 1: Heading to camera - LED ON continuously
+//             led.set_high();
 //             drop(gps_data);
-//             green_timer_ms = 0; // Reset green timer when not in green state
 //             Timer::after(Duration::from_millis(500)).await;
 //         } else if gps_data.valid {
-//             // State 2: GPS fix but not heading to camera - GREEN blink every 10 seconds
+//             // State 2: GPS fix - LED OFF (all good, no indication needed)
+//             led.set_low();
 //             drop(gps_data);
-
-//             if green_timer_ms >= GREEN_BLINK_INTERVAL_MS {
-//                 // Time for a green blink
-//                 led.write(brightness(
-//                     gamma(core::iter::once(color_green)),
-//                     BRIGHTNESS_LOW,
-//                 ))
-//                 .ok();
-//                 Timer::after(Duration::from_millis(GREEN_BLINK_DURATION_MS)).await;
-
-//                 // Turn off LED after blink
-//                 led.write(core::iter::once(color_off)).ok();
-//                 green_timer_ms = 0; // Reset timer
-//             } else {
-//                 // LED stays off, just increment timer
-//                 led.write(core::iter::once(color_off)).ok();
-//             }
-
-//             // Wait 1 second and increment timer (reduces mutex contention with GPS task)
 //             Timer::after(Duration::from_secs(1)).await;
-//             green_timer_ms += 1000;
 //         } else {
-//             // State 3: No GPS fix - YELLOW blinking at low brightness (1s on/1s off)
+//             // State 3: No GPS fix - Fast blink (500ms on/500ms off)
 //             drop(gps_data);
-//             green_timer_ms = 0; // Reset green timer when not in green state
 
 //             if blink_state {
-//                 led.write(brightness(
-//                     gamma(core::iter::once(color_yellow)),
-//                     BRIGHTNESS_LOW,
-//                 ))
-//                 .ok();
+//                 led.set_high();
 //             } else {
-//                 led.write(core::iter::once(color_off)).ok();
+//                 led.set_low();
 //             }
-
 //             blink_state = !blink_state;
-//             Timer::after(Duration::from_secs(1)).await;
+//             Timer::after(Duration::from_millis(500)).await;
 //         }
 //     }
 // }
+#[embassy_executor::task]
+pub async fn led_control_task(mut led: LedType) {
+    defmt::info!("LED control task started");
+
+    const BRIGHTNESS_LOW: u8 = 10;
+    const BRIGHTNESS_HIGH: u8 = 100;
+    const GREEN_BLINK_INTERVAL_MS: u64 = 10000; // 10 seconds between blinks
+    const GREEN_BLINK_DURATION_MS: u64 = 200; // 200ms blink duration
+
+    let color_red = RGB8 { r: 255, g: 0, b: 0 };
+    let color_green = RGB8 { r: 0, g: 255, b: 0 };
+    let color_yellow = RGB8 {
+        r: 255,
+        g: 255,
+        b: 0,
+    };
+    let color_off = RGB8 { r: 0, g: 0, b: 0 };
+
+    let mut blink_state = false;
+    let mut green_timer_ms: u64 = 0;
+
+    loop {
+        let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
+        let gps_data = gps_ref.lock().await;
+
+        if gps_data.notification.is_some() {
+            // State 1: Heading to camera - RED at high brightness (continuous)
+            led.write(brightness(
+                gamma([color_red; 3].into_iter()),
+                BRIGHTNESS_HIGH,
+            ))
+            .ok();
+            drop(gps_data);
+            green_timer_ms = 0; // Reset green timer when not in green state
+            Timer::after(Duration::from_millis(500)).await;
+        } else if gps_data.valid {
+            // State 2: GPS fix but not heading to camera - GREEN blink every 10 seconds
+            drop(gps_data);
+
+            if green_timer_ms >= GREEN_BLINK_INTERVAL_MS {
+                // Time for a green blink
+                led.write(brightness(
+                    gamma([color_green; 3].into_iter()),
+                    BRIGHTNESS_LOW,
+                ))
+                .ok();
+                Timer::after(Duration::from_millis(GREEN_BLINK_DURATION_MS)).await;
+
+                // Turn off LED after blink
+                led.write([color_off; 3].into_iter()).ok();
+                green_timer_ms = 0; // Reset timer
+            } else {
+                // LED stays off, just increment timer
+                led.write([color_off; 3].into_iter()).ok();
+            }
+
+            // Wait 1 second and increment timer (reduces mutex contention with GPS task)
+            Timer::after(Duration::from_secs(1)).await;
+            green_timer_ms += 1000;
+        } else {
+            // State 3: No GPS fix - YELLOW blinking at low brightness (1s on/1s off)
+            drop(gps_data);
+            green_timer_ms = 0; // Reset green timer when not in green state
+
+            if blink_state {
+                led.write(brightness(
+                    gamma([color_yellow; 3].into_iter()),
+                    BRIGHTNESS_LOW,
+                ))
+                .ok();
+            } else {
+                led.write([color_off; 3].into_iter()).ok();
+            }
+
+            blink_state = !blink_state;
+            Timer::after(Duration::from_secs(1)).await;
+        }
+    }
+}
 
 #[embassy_executor::task]
 pub async fn buzzer_control_task(mut buzzer: Output<'static>) {

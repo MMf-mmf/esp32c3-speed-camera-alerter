@@ -20,7 +20,6 @@ use esp_println as _;
 use esp_wifi::EspWifiController;
 
 use gps::gps::{buzzer_control_task, gps_task, led_control_task, proximity_check_task};
-use gps::gps::{GpsData, GPS_DATA_CELL, GPS_DATA_REF};
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
@@ -29,6 +28,15 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 }
 
 esp_bootloader_esp_idf::esp_app_desc!();
+
+/// The mode button is the same physical button in both boot modes, so both paths
+/// have to read the same pin. GPIO10 is the ESP32-C3 Super Mini wiring; on the
+/// original devkit this button was on GPIO9.
+macro_rules! mode_button_pin {
+    ($peripherals:expr) => {
+        $peripherals.GPIO10
+    };
+}
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
@@ -55,16 +63,9 @@ async fn init_gps_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
     let timer0 = TimerGroup::new(peripherals.TIMG1);
     esp_hal_embassy::init(timer0.timer0);
 
-    // Initialize GPS data mutex
-    let gps_data_mutex = embassy_sync::mutex::Mutex::new(GpsData::default());
-    let gps_data_ref = GPS_DATA_CELL.init(gps_data_mutex);
-    unsafe {
-        GPS_DATA_REF = Some(gps_data_ref);
-    }
-
-    // TODO: Initialize button on GPIO10 (with pull-up for active-low)
+    // Mode button, active-low via the internal pull-up.
     let button = Input::new(
-        peripherals.GPIO10, // 9 for normal
+        mode_button_pin!(peripherals),
         InputConfig::default().with_pull(Pull::Up),
     );
 
@@ -72,9 +73,9 @@ async fn init_gps_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
         .spawn(gps::button::button_task(button, false))
         .unwrap();
 
-    // Initialize GPS UART
-    let tx_pin = peripherals.GPIO20; // 4 for normal
-    let rx_pin = peripherals.GPIO21; // 5 for normal
+    // GPS UART. Super Mini pinout; the devkit used GPIO4/GPIO5.
+    let tx_pin = peripherals.GPIO20;
+    let rx_pin = peripherals.GPIO21;
     let uart_config = Config::default().with_baudrate(9600);
     let uart = Uart::new(peripherals.UART1, uart_config)
         .expect("UART initialization failed")
@@ -85,12 +86,12 @@ async fn init_gps_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
     // Initialize RMT for LED control
     let rmt: Rmt<'_, esp_hal::Blocking> =
         Rmt::new(peripherals.RMT, Rate::from_mhz(80)).expect("Failed to initialize RMT");
+    // 75 RMT words = 24 bits x 3 LEDs, plus the reset word.
     let rmt_buffer = [0u32; 75];
     let led = SmartLedsAdapter::new(rmt.channel0, peripherals.GPIO8, rmt_buffer);
-    // let led = Output::new(peripherals.GPIO3, Level::Low, OutputConfig::default());
 
     // Initialize buzzer on GPIO2
-    let buzzer = Output::new(peripherals.GPIO2, Level::Low, Default::default());
+    let buzzer = Output::new(peripherals.GPIO2, Level::Low, OutputConfig::default());
 
     // Spawn GPS tasks
     spawner.spawn(gps_task(uart)).unwrap();
@@ -114,9 +115,9 @@ async fn init_wifi_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
     // Clear the RTC boot mode so next reboot goes to GPS mode
     gps::mode::clear_boot_mode();
 
-    // Initialize button on GPIO9 (with pull-up for active-low)
+    // Same button as GPS mode, so that a long press gets back out of WiFi mode.
     let button = Input::new(
-        peripherals.GPIO9,
+        mode_button_pin!(peripherals),
         InputConfig::default().with_pull(Pull::Up),
     );
 
@@ -129,7 +130,7 @@ async fn init_wifi_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
     let rng = Rng::new(peripherals.RNG);
     let esp_wifi_ctrl = &*gps::mk_static!(
         EspWifiController<'static>,
-        esp_wifi::init(timer1.timer0, rng.clone()).unwrap()
+        esp_wifi::init(timer1.timer0, rng).unwrap()
     );
 
     defmt::info!("Starting WiFi AP...");
@@ -144,18 +145,20 @@ async fn init_wifi_mode(spawner: Spawner, peripherals: Peripherals) -> ! {
         }
     };
 
-    // FIXED: Add delay to ensure stack is fully ready (matching working example)
+    // The network stack needs a moment after the link comes up before the
+    // listening sockets below will bind reliably.
     Timer::after(Duration::from_millis(1000)).await;
 
     // Initialize OTA and mark current app as valid
-    if let Err(_) = gps::ota::ota_init() {
+    if gps::ota::ota_init().is_err() {
         defmt::warn!("OTA init failed (expected if running from factory partition)");
     }
 
     // Spawn OTA task
     spawner.must_spawn(gps::ota::ota_task());
 
-    // FIXED: Spawn web server tasks with proper loop for pool size
+    // One task per slot in the picoserve pool, so concurrent requests during an
+    // OTA upload do not queue behind each other.
     let web_app = gps::web::WebApp::default();
     for id in 0..gps::web::WEB_TASK_POOL_SIZE {
         spawner.must_spawn(gps::web::web_task(

@@ -1,6 +1,7 @@
 use core::f64::consts::PI;
 use core::fmt::Write;
 use defmt;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use esp_hal::gpio::Output;
@@ -12,7 +13,6 @@ use heapless::String as HString;
 use libm::{atan2, cos, sin, sqrt};
 use smart_leds::RGB8;
 use smart_leds::{brightness, gamma, SmartLedsWrite};
-use static_cell::StaticCell;
 
 // Type alias for the LED adapter
 pub type LedType = SmartLedsAdapter<esp_hal::rmt::ConstChannelAccess<esp_hal::rmt::Tx, 0>, 75>;
@@ -40,8 +40,10 @@ pub struct GpsData {
     pub buzzer_triggered: bool,
 }
 
-impl Default for GpsData {
-    fn default() -> Self {
+impl GpsData {
+    /// `const` so that `GPS_DATA` below can be initialised at compile time,
+    /// which is what lets the shared state be a plain `static` with no `unsafe`.
+    pub const fn new() -> Self {
         Self {
             lat: 0.0,
             lon: 0.0,
@@ -58,48 +60,17 @@ impl Default for GpsData {
     }
 }
 
-pub static GPS_DATA_CELL: StaticCell<
-    Mutex<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, GpsData>,
-> = StaticCell::new();
-pub static mut GPS_DATA_REF: Option<
-    &'static Mutex<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, GpsData>,
-> = None;
+impl Default for GpsData {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-// Simplified led_control_task for a single LED
-// #[embassy_executor::task]
-// pub async fn led_control_task(mut led: Output<'static>) {
-//     defmt::info!("Simple LED control task started");
+/// The one piece of state shared between the GPS reader and the LED, buzzer and
+/// proximity tasks. A critical-section mutex because the tasks run on a single
+/// executor but the data is also touched from interrupt-driven UART wakeups.
+pub static GPS_DATA: Mutex<CriticalSectionRawMutex, GpsData> = Mutex::new(GpsData::new());
 
-//     let mut blink_state = false;
-
-//     loop {
-//         let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
-//         let gps_data = gps_ref.lock().await;
-
-//         if gps_data.notification.is_some() {
-//             // State 1: Heading to camera - LED ON continuously
-//             led.set_high();
-//             drop(gps_data);
-//             Timer::after(Duration::from_millis(500)).await;
-//         } else if gps_data.valid {
-//             // State 2: GPS fix - LED OFF (all good, no indication needed)
-//             led.set_low();
-//             drop(gps_data);
-//             Timer::after(Duration::from_secs(1)).await;
-//         } else {
-//             // State 3: No GPS fix - Fast blink (500ms on/500ms off)
-//             drop(gps_data);
-
-//             if blink_state {
-//                 led.set_high();
-//             } else {
-//                 led.set_low();
-//             }
-//             blink_state = !blink_state;
-//             Timer::after(Duration::from_millis(500)).await;
-//         }
-//     }
-// }
 #[embassy_executor::task]
 pub async fn led_control_task(mut led: LedType) {
     defmt::info!("LED control task started");
@@ -122,8 +93,7 @@ pub async fn led_control_task(mut led: LedType) {
     let mut green_timer_ms: u64 = 0;
 
     loop {
-        let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
-        let gps_data = gps_ref.lock().await;
+        let gps_data = GPS_DATA.lock().await;
 
         if gps_data.notification.is_some() {
             // State 1: Heading to camera - RED at high brightness (continuous)
@@ -149,11 +119,11 @@ pub async fn led_control_task(mut led: LedType) {
                 Timer::after(Duration::from_millis(GREEN_BLINK_DURATION_MS)).await;
 
                 // Turn off LED after blink
-                led.write([color_off; 3].into_iter()).ok();
+                led.write([color_off; 3]).ok();
                 green_timer_ms = 0; // Reset timer
             } else {
                 // LED stays off, just increment timer
-                led.write([color_off; 3].into_iter()).ok();
+                led.write([color_off; 3]).ok();
             }
 
             // Wait 1 second and increment timer (reduces mutex contention with GPS task)
@@ -171,7 +141,7 @@ pub async fn led_control_task(mut led: LedType) {
                 ))
                 .ok();
             } else {
-                led.write([color_off; 3].into_iter()).ok();
+                led.write([color_off; 3]).ok();
             }
 
             blink_state = !blink_state;
@@ -190,8 +160,7 @@ pub async fn buzzer_control_task(mut buzzer: Output<'static>) {
     loop {
         Timer::after(Duration::from_millis(100)).await;
 
-        let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
-        let mut gps_data = gps_ref.lock().await;
+        let mut gps_data = GPS_DATA.lock().await;
 
         if gps_data.notification.is_some() && !gps_data.buzzer_triggered {
             // Camera detected and we haven't buzzed yet
@@ -237,8 +206,7 @@ pub async fn proximity_check_task() {
     loop {
         Timer::after(Duration::from_secs(3)).await;
 
-        let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
-        let mut gps_data = gps_ref.lock().await;
+        let mut gps_data = GPS_DATA.lock().await;
 
         if gps_data.valid && gps_data.speed > MINIMUM_SPEED_KNOTS {
             let current_pos = Coord {
@@ -249,7 +217,7 @@ pub async fn proximity_check_task() {
 
             let mut search_hashes: heapless::Vec<HString<12>, 9> = heapless::Vec::new();
             let mut central_key = HString::<12>::new();
-            write!(central_key, "{}", &central_hash_str).unwrap();
+            write!(central_key, "{}", central_hash_str).unwrap();
             search_hashes.push(central_key).ok();
 
             for dir in [
@@ -345,8 +313,7 @@ pub async fn gps_task(mut uart: Uart<'static, Async>) {
                                     // GPGGA: Only update satellite count
                                     if let Some(sats) = parse_gga(sentence_str) {
                                         defmt::info!("GPGGA: Sats {}", sats);
-                                        let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
-                                        let mut gps_data = gps_ref.lock().await;
+                                        let mut gps_data = GPS_DATA.lock().await;
                                         gps_data.satellites = sats;
                                     }
                                 } else if sentence_str.starts_with("$GPRMC") {
@@ -371,8 +338,7 @@ pub async fn gps_task(mut uart: Uart<'static, Async>) {
                                             speed,
                                             heading
                                         );
-                                        let gps_ref = unsafe { GPS_DATA_REF.unwrap() };
-                                        let mut gps_data = gps_ref.lock().await;
+                                        let mut gps_data = GPS_DATA.lock().await;
                                         gps_data.lat = lat;
                                         gps_data.lon = lon;
                                         gps_data.speed = speed;

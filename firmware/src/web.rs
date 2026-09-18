@@ -19,7 +19,8 @@ impl AppBuilder for Application {
     }
 }
 
-// FIXED: Increased pool size to 2 for better concurrency (matching working example)
+/// Two connections in flight: the browser holds one for the upload while the
+/// other stays free for the status polls the page makes alongside it.
 pub const WEB_TASK_POOL_SIZE: usize = 2;
 
 #[embassy_executor::task(pool_size = WEB_TASK_POOL_SIZE)]
@@ -31,7 +32,7 @@ pub async fn web_task(
 ) -> ! {
     let port = 80;
     let mut tcp_rx_buffer = [0; 2048];
-    let mut tcp_tx_buffer = [0; 2048]; // FIXED: Reduced from 4096 to 2048 to match working example
+    let mut tcp_tx_buffer = [0; 2048];
     let mut http_buffer = [0; 16384];
 
     picoserve::listen_and_serve(
@@ -118,7 +119,7 @@ async fn ota_handler(
         params.is_final
     );
 
-    // FIXED: Send start command only for first chunk (offset 0)
+    // The first chunk opens the OTA session; later chunks just append.
     if params.offset == 0 {
         crate::ota::OTA_CHANNEL
             .send(crate::ota::OtaCommand::Start {
@@ -127,31 +128,33 @@ async fn ota_handler(
             })
             .await;
 
-        // FIXED: Small delay to let OTA task initialize (matching working example)
+        // Give the OTA task a chance to open the partition before the first write
+        // lands on the channel.
         embassy_time::Timer::after(embassy_time::Duration::from_millis(10)).await;
     }
 
-    // FIXED: Copy data to OTA buffer BEFORE sending write command
-    let buffer_guard = crate::ota::OTA_BUFFER.lock().await;
-    let mut buffer = buffer_guard.borrow_mut();
+    // Fill the shared buffer before signalling, so the OTA task never reads a
+    // chunk that has not been written yet. Scoped so the guard is released before
+    // the send below parks this task.
     let len = data.len();
-    buffer[..len].copy_from_slice(data);
-    drop(buffer);
-    drop(buffer_guard);
+    {
+        let mut buffer = crate::ota::OTA_BUFFER.lock().await;
+        buffer[..len].copy_from_slice(data);
+    }
 
     // Send write command
     crate::ota::OTA_CHANNEL
         .send(crate::ota::OtaCommand::WriteChunk { len })
         .await;
 
-    // FIXED: Send finish command only for last chunk
     if params.is_final {
         crate::ota::OTA_CHANNEL
             .send(crate::ota::OtaCommand::Finish)
             .await;
     }
 
-    // FIXED: Delay before sending response to let WiFi TX queue clear (matching working example)
+    // Let the WiFi TX queue drain before replying; without this the response can
+    // be dropped under a sustained upload and the browser retries the chunk.
     embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
 
     picoserve::response::Json(OtaResponse {

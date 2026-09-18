@@ -1,13 +1,15 @@
-use core::cell::RefCell;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
 use esp_hal_ota::Ota;
 use esp_storage::FlashStorage;
 
-// FIXED: Increased buffer to 8KB to match working example
-pub static OTA_BUFFER: Mutex<CriticalSectionRawMutex, RefCell<[u8; 8192]>> =
-    Mutex::new(RefCell::new([0u8; 8192]));
+/// 8 KB staging buffer. Smaller chunks made the upload spend more time in the
+/// request/response round trip than in flash writes.
+///
+/// The `Mutex` alone is the exclusion; an inner `RefCell` would only add a second
+/// runtime borrow check on top of it, and a borrow that outlives an `.await`.
+pub static OTA_BUFFER: Mutex<CriticalSectionRawMutex, [u8; 8192]> = Mutex::new([0u8; 8192]);
 
 pub static OTA_CHANNEL: Channel<CriticalSectionRawMutex, OtaCommand, 8> = Channel::new();
 
@@ -28,8 +30,8 @@ pub enum OtaError {
 }
 
 /// Initialize OTA and mark the current app as valid
-pub fn ota_init() -> Result<(), ()> {
-    let mut ota = Ota::new(FlashStorage::new()).map_err(|_| ())?;
+pub fn ota_init() -> Result<(), OtaError> {
+    let mut ota = Ota::new(FlashStorage::new()).map_err(|_| OtaError::InitFailed)?;
 
     // Mark current partition as valid to prevent rollback
     // Note: This will fail if running from factory partition (which is expected)
@@ -70,9 +72,7 @@ pub async fn ota_task() {
 
             OtaCommand::WriteChunk { len } => {
                 if let Some(ref mut ota) = ota_opt {
-                    // Access the shared buffer
-                    let buffer_guard = OTA_BUFFER.lock().await;
-                    let buffer = buffer_guard.borrow();
+                    let buffer = OTA_BUFFER.lock().await;
 
                     match ota.ota_write_chunk(&buffer[..len]) {
                         Ok(is_complete) => {

@@ -15,8 +15,20 @@ use esp_wifi::EspWifiController;
 
 use crate::mk_static;
 
-const SSID: &str = "SpeedMe";
-const PASSWORD: &str = "12345678";
+// Credentials for the device's own access point. This AP only exists while the
+// device is in OTA mode -- you long-press the button to raise it, flash, and
+// long-press again to drop it -- so it is a setup network, not a standing one.
+// Override at build time:
+//   SPEEDME_AP_PASSWORD=... cargo build --release
+const SSID: &str = match option_env!("SPEEDME_AP_SSID") {
+    Some(s) => s,
+    None => "SpeedMe",
+};
+const PASSWORD: &str = match option_env!("SPEEDME_AP_PASSWORD") {
+    Some(s) => s,
+    None => "speedme-ota",
+};
+
 const STATIC_IP: &str = "192.168.13.37/24";
 const GATEWAY_IP: &str = "192.168.13.37";
 
@@ -26,7 +38,7 @@ pub async fn start_wifi(
     rng: Rng,
     spawner: &Spawner,
 ) -> anyhow::Result<Stack<'static>> {
-    let (controller, interfaces) = esp_wifi::wifi::new(&esp_wifi_ctrl, wifi).unwrap();
+    let (controller, interfaces) = esp_wifi::wifi::new(esp_wifi_ctrl, wifi).unwrap();
     let wifi_interface = interfaces.ap;
     let mut rng = rng;
     let net_seed = rng.random() as u64 | ((rng.random() as u64) << 32);
@@ -68,7 +80,7 @@ async fn wait_for_connection(stack: Stack<'_>) {
         Timer::after(Duration::from_millis(500)).await;
     }
 
-    defmt::info!("Connect to AP `{}` with password `{}`", SSID, PASSWORD);
+    defmt::info!("Connect to AP `{}`", SSID);
     defmt::info!("Then browse to http://{}/", GATEWAY_IP);
 
     while !stack.is_config_up() {
@@ -86,18 +98,15 @@ async fn connection_task(mut controller: WifiController<'static>) {
     defmt::info!("Device capabilities: {:?}", controller.capabilities());
 
     loop {
-        match esp_wifi::wifi::wifi_state() {
-            WifiState::ApStarted => {
-                controller.wait_for_event(WifiEvent::ApStop).await;
-                Timer::after(Duration::from_millis(5000)).await
-            }
-            _ => {}
+        if esp_wifi::wifi::wifi_state() == WifiState::ApStarted {
+            controller.wait_for_event(WifiEvent::ApStop).await;
+            Timer::after(Duration::from_millis(5000)).await
         }
 
         if !matches!(controller.is_started(), Ok(true)) {
             let client_config = wifi::Configuration::AccessPoint(wifi::AccessPointConfiguration {
-                ssid: SSID.try_into().unwrap(),
-                password: PASSWORD.try_into().unwrap(),
+                ssid: SSID.into(),
+                password: PASSWORD.into(),
                 auth_method: esp_wifi::wifi::AuthMethod::WPA2Personal,
                 ..Default::default()
             });

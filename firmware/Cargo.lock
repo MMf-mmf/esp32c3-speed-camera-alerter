@@ -72,7 +72,7 @@ dependencies = [
  "embedded-io",
  "embedded-io-async",
  "futures-intrusive",
- "heapless 0.8.0",
+ "heapless",
 ]
 
 [[package]]
@@ -267,7 +267,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2ccd3a181a33c710e07c3f04623d7a11e9969b1e44a7276ead7873b049720cb"
 dependencies = [
  "edge-raw",
- "heapless 0.8.0",
+ "heapless",
  "num_enum",
  "rand_core 0.6.4",
 ]
@@ -368,7 +368,7 @@ dependencies = [
  "embassy-time 0.5.0",
  "embedded-io-async",
  "embedded-nal-async",
- "heapless 0.8.0",
+ "heapless",
  "managed",
  "smoltcp",
 ]
@@ -394,7 +394,7 @@ dependencies = [
  "embedded-io-async",
  "futures-sink",
  "futures-util",
- "heapless 0.8.0",
+ "heapless",
 ]
 
 [[package]]
@@ -408,7 +408,7 @@ dependencies = [
  "embedded-io-async",
  "futures-core",
  "futures-sink",
- "heapless 0.8.0",
+ "heapless",
 ]
 
 [[package]]
@@ -460,7 +460,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc55c748d16908a65b166d09ce976575fb8852cf60ccd06174092b41064d8f83"
 dependencies = [
  "embassy-executor",
- "heapless 0.8.0",
+ "heapless",
 ]
 
 [[package]]
@@ -686,7 +686,7 @@ dependencies = [
  "embassy-net",
  "embassy-sync 0.7.2",
  "embassy-time 0.5.0",
- "heapless 0.8.0",
+ "heapless",
  "log",
 ]
 
@@ -1028,7 +1028,6 @@ name = "geohash"
 version = "0.13.1"
 dependencies = [
  "geo-types",
- "heapless 0.9.1",
  "libm",
  "num-traits",
 ]
@@ -1057,7 +1056,7 @@ dependencies = [
  "esp-storage",
  "esp-wifi",
  "geohash",
- "heapless 0.8.0",
+ "heapless",
  "libm",
  "nb 1.1.0",
  "phf",
@@ -1093,16 +1092,6 @@ dependencies = [
  "defmt 0.3.100",
  "hash32",
  "serde",
- "stable_deref_trait",
-]
-
-[[package]]
-name = "heapless"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1edcd5a338e64688fbdcb7531a846cfd3476a54784dcb918a0844682bc7ada5"
-dependencies = [
- "hash32",
  "stable_deref_trait",
 ]
 
@@ -1345,7 +1334,7 @@ dependencies = [
  "embassy-time 0.5.0",
  "embedded-io-async",
  "futures-util",
- "heapless 0.8.0",
+ "heapless",
  "lhash",
  "picoserve_derive",
  "ryu",
@@ -1572,7 +1561,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b81787e655bd59cecadc91f7b6b8651330b2be6c33246039a65e5cd6f4e0828"
 dependencies = [
- "heapless 0.8.0",
+ "heapless",
  "ryu",
  "serde",
 ]
@@ -1635,7 +1624,7 @@ dependencies = [
  "byteorder",
  "cfg-if",
  "defmt 0.3.100",
- "heapless 0.8.0",
+ "heapless",
  "managed",
 ]
 

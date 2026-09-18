@@ -3,7 +3,17 @@ use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
+/// Camera coordinates, as produced by `tools/geohash-prepper`.
+const GEODATA_CSV: &str = "data/geodata.csv";
+
 fn main() {
+    // Without these, editing the CSV or changing the AP credentials leaves the
+    // previously generated table and the previously baked-in strings in place.
+    println!("cargo:rerun-if-changed={GEODATA_CSV}");
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=SPEEDME_AP_SSID");
+    println!("cargo:rerun-if-env-changed=SPEEDME_AP_PASSWORD");
+
     // 1. Set the path for the generated code.
     let path = Path::new(&env::var("OUT_DIR").unwrap()).join("geodata.rs");
     let mut file = BufWriter::new(fs::File::create(&path).unwrap());
@@ -12,7 +22,8 @@ fn main() {
     let mut map_builder = phf_codegen::Map::new();
 
     // 3. Read the CSV and add entries to the builder.
-    let data_str = fs::read_to_string("docs/geodata.csv").expect("Unable to read docs/geodata.csv");
+    let data_str = fs::read_to_string(GEODATA_CSV)
+        .unwrap_or_else(|e| panic!("unable to read {GEODATA_CSV}: {e}"));
     for line in data_str.lines().skip(1) {
         // Skip the header row
         let parts: Vec<&str> = line.split(',').collect();
@@ -44,7 +55,7 @@ fn main() {
         map_builder.build()
     )
     .unwrap();
-    // end of phf map generation used to generate the geohash hash
+    // End of the compile-time geohash table generation.
     linker_be_nice();
     println!("cargo:rustc-link-arg=-Tdefmt.x");
     // make sure linkall.x is the last linker script (otherwise might cause problems with flip-link)

@@ -1,0 +1,25 @@
+# Rust build output
+target/
+debug/
+**/*.rs.bk
+
+# Firmware images are release artifacts, not source
+*.bin
+*.elf
+
+# Python virtualenvs (data-prep scratch work)
+venv/
+.venv/
+__pycache__/
+
+# Editor / OS
+.DS_Store
+.idea/
+.zed/
+.helix/
+*.pdb
+
+# Keep the two VS Code files that help someone open the firmware; ignore the rest
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json

@@ -1,8 +1,17 @@
+# Standalone Cargo project. The empty [workspace] table stops cargo walking up the
+# repo and pulling in tools/geohash-prepper, which is a host crate and cannot be
+# built for the RISC-V target that .cargo/config.toml pins.
+[workspace]
+
 [package]
 edition      = "2021"
 name         = "gps"
 rust-version = "1.86"
 version      = "0.1.0"
+description  = "ESP32-C3 firmware that alerts when you are driving toward a speed or red-light camera"
+license      = "MIT OR Apache-2.0"
+repository   = "https://github.com/MMf-mmf/esp32c3-speed-camera-alerter"
+publish      = false
 
 [[bin]]
 name = "gps"

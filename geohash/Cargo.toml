@@ -2,9 +2,13 @@
 name = "geohash"
 version = "0.13.1"
 edition = "2021"
+description = "no_std fork of the georust/geohash crate, for bare-metal targets"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/MMf-mmf/esp32c3-speed-camera-alerter"
+keywords = ["geohash", "gis", "no-std", "embedded"]
+categories = ["science::geo", "no-std"]
 
 [dependencies]
 geo-types = { version = "0.7", default-features = false }
 libm = "0.2.8"
-heapless = "0.9.1"
 num-traits = { version = "0.2", default-features = false, features = ["libm"] }

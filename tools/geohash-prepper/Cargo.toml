@@ -2,6 +2,10 @@
 name = "geohash_prepper"
 version = "0.1.0"
 edition = "2024"
+description = "Converts a CSV of camera coordinates into the deduplicated geohash table the firmware compiles in"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/MMf-mmf/esp32c3-speed-camera-alerter"
+publish = false
 
 [dependencies]
 csv = "1.3"

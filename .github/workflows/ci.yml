@@ -14,7 +14,7 @@ jobs:
     name: firmware (riscv32imc)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # rust-toolchain.toml in firmware/ pins nightly + rust-src + the target.
       - name: Install toolchain
@@ -45,7 +45,7 @@ jobs:
     name: geohash (tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup update stable && rustup default stable
       - run: rustup component add clippy rustfmt
       - uses: Swatinem/rust-cache@v2
@@ -76,7 +76,7 @@ jobs:
     name: geohash-prepper
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup update stable && rustup default stable
       - run: rustup component add clippy rustfmt
       - uses: Swatinem/rust-cache@v2

@@ -1,5 +1,7 @@
 # Speed camera alerter
 
+[![CI](https://github.com/MMf-mmf/esp32c3-speed-camera-alerter/actions/workflows/ci.yml/badge.svg)](https://github.com/MMf-mmf/esp32c3-speed-camera-alerter/actions/workflows/ci.yml)
+
 A bare-metal Rust firmware for the ESP32-C3 that watches your GPS position and
 warns you — red LED and two short beeps — when you are **driving toward** a speed
 or red-light camera.

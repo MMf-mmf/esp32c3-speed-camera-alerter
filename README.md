@@ -15,7 +15,12 @@ things are true at once:
 - you are moving faster than **~12 mph**, so it is silent when you are parked.
 
 <p align="center">
-  <img src="docs/ESP32C3.jpg" alt="The assembled device" width="480">
+  <img src="docs/demo.gif" alt="The device on a dashboard: its three LEDs turn red on approach to a speed camera, then go dark once the camera is behind the car" width="288">
+</p>
+
+<p align="center">
+  <em>Approaching a speed camera: the LEDs go red, and drop back to idle once it is behind the car.</em><br>
+  <a href="https://www.linkedin.com/posts/mendelfuterfas_from-problem-to-solution-why-i-built-a-24-activity-7407034347847004161-8Pqo">Full clip with commentary on LinkedIn &rarr;</a>
 </p>
 
 No allocator-heavy runtime, no cloud service, no phone. The camera database is
@@ -93,8 +98,13 @@ a single workspace would force one target on both.
 ## Hardware
 
 ESP32-C3 Super Mini, a 9600-baud UART GPS module, three WS2812B LEDs, an active
-buzzer and a momentary button. Full pinout and bring-up steps are in
+buzzer and a momentary button, in a 3D-printed puck that sits on the dashboard.
+Full pinout and bring-up steps are in
 [docs/WIRING_TABLE.md](docs/WIRING_TABLE.md).
+
+<p align="center">
+  <img src="docs/ESP32C3.jpg" alt="The assembled device" width="480">
+</p>
 
 ## Build and flash
 

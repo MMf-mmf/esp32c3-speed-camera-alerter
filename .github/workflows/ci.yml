@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  firmware:
+    name: firmware (riscv32imc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml in firmware/ pins nightly + rust-src + the target.
+      - name: Install toolchain
+        run: rustup show
+        working-directory: firmware
+
+      - name: Add clippy and rustfmt
+        run: rustup component add clippy rustfmt
+        working-directory: firmware
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware
+
+      - name: Format
+        run: cargo fmt --check
+        working-directory: firmware
+
+      - name: Build
+        run: cargo build --release
+        working-directory: firmware
+
+      - name: Clippy
+        run: cargo clippy --release -- -D warnings
+        working-directory: firmware
+
+  geohash:
+    name: geohash (tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable && rustup default stable
+      - run: rustup component add clippy rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: geohash
+
+      - name: Format
+        run: cargo fmt --check
+        working-directory: geohash
+
+      - name: Test
+        run: cargo test
+        working-directory: geohash
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: geohash
+
+      # The crate ships as no_std; `cargo test` links std, so check the real
+      # configuration builds for a bare-metal target too.
+      - name: Build for a no_std target
+        run: |
+          rustup target add thumbv7em-none-eabihf
+          cargo build --target thumbv7em-none-eabihf
+        working-directory: geohash
+
+  prepper:
+    name: geohash-prepper
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable && rustup default stable
+      - run: rustup component add clippy rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/geohash-prepper
+
+      - name: Format
+        run: cargo fmt --check
+        working-directory: tools/geohash-prepper
+
+      - name: Build
+        run: cargo build
+        working-directory: tools/geohash-prepper
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: tools/geohash-prepper
+
+      # The committed camera table must be reproducible from the committed input,
+      # otherwise the documented pipeline is a lie.
+      - name: Camera table is reproducible
+        run: |
+          cargo run --quiet -- data/Chicago_Speed_Camera_Locations_20250911.csv /tmp/geodata.csv
+          diff /tmp/geodata.csv ../../firmware/data/geodata.csv
+        working-directory: tools/geohash-prepper

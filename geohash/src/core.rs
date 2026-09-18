@@ -300,9 +300,13 @@ pub fn decode(hash_str: &str) -> Result<(Coord<f64>, f64, f64), GeohashError> {
 pub fn neighbor(hash_str: &str, direction: Direction) -> Result<String, GeohashError> {
     let (coord, lon_err, lat_err) = decode(hash_str)?;
     let (dlat, dlng) = direction.to_tuple();
+    // Called as an explicit trait call rather than `x.rem_euclid(..)`: under
+    // `cargo test` the crate links std, whose inherent `f64::rem_euclid` would
+    // otherwise shadow this and have the tests exercise a different path from
+    // the no_std build that actually ships.
     let neighbor_coord = Coord {
-        x: ((coord.x + 2f64 * lon_err.abs() * dlng) + 180.0).rem_euclid(&360.0) - 180.0,
-        y: ((coord.y + 2f64 * lat_err.abs() * dlat) + 90.0).rem_euclid(&180.0) - 90.0,
+        x: Euclid::rem_euclid(&((coord.x + 2f64 * lon_err.abs() * dlng) + 180.0), &360.0) - 180.0,
+        y: Euclid::rem_euclid(&((coord.y + 2f64 * lat_err.abs() * dlat) + 90.0), &180.0) - 90.0,
     };
     encode(neighbor_coord, hash_str.len())
 }
@@ -341,4 +345,226 @@ pub fn neighbors(hash_str: &str) -> Result<Neighbors, GeohashError> {
         n: neighbor(hash_str, Direction::N)?,
         ne: neighbor(hash_str, Direction::NE)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Direction;
+
+    // A coordinate in San Luis Obispo, CA, and its known encodings. These are the
+    // vectors the upstream crate documents, kept here so a regression in the
+    // bit-twiddling shows up as a test failure rather than a wrong alert.
+    const SLO: Coord<f64> = Coord {
+        x: -120.6623,
+        y: 35.3003,
+    };
+
+    #[test]
+    fn encode_matches_known_vectors() {
+        assert_eq!(encode(SLO, 5).unwrap(), "9q60y");
+        assert_eq!(encode(SLO, 10).unwrap(), "9q60y60rhs");
+        assert_eq!(
+            encode(
+                Coord {
+                    x: 112.5584,
+                    y: 37.8324
+                },
+                9
+            )
+            .unwrap(),
+            "ww8p1r4t8"
+        );
+    }
+
+    #[test]
+    fn encode_honours_requested_length() {
+        for len in 1..=12 {
+            assert_eq!(encode(SLO, len).unwrap().len(), len);
+        }
+    }
+
+    #[test]
+    fn encode_produces_prefixes_of_longer_hashes() {
+        // A shorter geohash must be a prefix of a longer one for the same point.
+        // The firmware relies on this when it searches at precision 7.
+        let long = encode(SLO, 12).unwrap();
+        for len in 1..=12 {
+            assert_eq!(encode(SLO, len).unwrap(), long[..len]);
+        }
+    }
+
+    #[test]
+    fn decode_matches_known_vector() {
+        let (coord, lon_err, lat_err) = decode("9q60y").unwrap();
+        assert_eq!(coord.x, -120.65185546875);
+        assert_eq!(coord.y, 35.31005859375);
+        assert_eq!(lon_err, 0.02197265625);
+        assert_eq!(lat_err, 0.02197265625);
+    }
+
+    #[test]
+    fn round_trip_stays_within_reported_error() {
+        let points = [
+            SLO,
+            Coord { x: 0.0, y: 0.0 },
+            Coord {
+                x: -87.70453,
+                y: 41.994995,
+            }, // a Chicago speed camera from the shipped dataset
+            Coord {
+                x: -73.901978,
+                y: 40.915523,
+            },
+            Coord {
+                x: 179.9999,
+                y: -89.9999,
+            },
+        ];
+        for p in points {
+            for len in 1..=12 {
+                let hash = encode(p, len).unwrap();
+                let (decoded, lon_err, lat_err) = decode(&hash).unwrap();
+                assert!(
+                    (decoded.x - p.x).abs() <= lon_err,
+                    "lon {} outside +/-{} of {} at len {}",
+                    decoded.x,
+                    lon_err,
+                    p.x,
+                    len
+                );
+                assert!(
+                    (decoded.y - p.y).abs() <= lat_err,
+                    "lat {} outside +/-{} of {} at len {}",
+                    decoded.y,
+                    lat_err,
+                    p.y,
+                    len
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decode_bbox_contains_the_encoded_point() {
+        let hash = encode(SLO, 7).unwrap();
+        let rect = decode_bbox(&hash).unwrap();
+        assert!(rect.min().x <= SLO.x && SLO.x <= rect.max().x);
+        assert!(rect.min().y <= SLO.y && SLO.y <= rect.max().y);
+    }
+
+    #[test]
+    fn encode_rejects_coordinates_outside_the_world() {
+        for bad in [
+            Coord { x: 0.0, y: 90.001 },
+            Coord { x: 0.0, y: -90.001 },
+            Coord { x: 180.001, y: 0.0 },
+            Coord {
+                x: -180.001,
+                y: 0.0,
+            },
+        ] {
+            assert!(matches!(
+                encode(bad, 7),
+                Err(GeohashError::InvalidCoordinateRange(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn encode_rejects_lengths_outside_one_to_twelve() {
+        assert!(matches!(
+            encode(SLO, 0),
+            Err(GeohashError::InvalidLength(0))
+        ));
+        assert!(matches!(
+            encode(SLO, 13),
+            Err(GeohashError::InvalidLength(13))
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_characters_outside_the_base32_alphabet() {
+        // 'a', 'i', 'l' and 'o' are deliberately absent from the geohash alphabet.
+        for bad in ["9q60ya", "9q60yi", "9q60yl", "9q60yo", "9q60y!"] {
+            assert!(
+                matches!(decode(bad), Err(GeohashError::InvalidHashCharacter(_))),
+                "expected {bad} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_rejects_overlong_hashes() {
+        assert!(matches!(
+            decode("9q60y60rhs123"),
+            Err(GeohashError::InvalidHash(_))
+        ));
+    }
+
+    #[test]
+    fn neighbor_matches_known_vector() {
+        assert_eq!(neighbor("9q60y60rhs", Direction::N).unwrap(), "9q60y60rht");
+    }
+
+    #[test]
+    fn neighbors_matches_known_vectors() {
+        let n = neighbors("9q60y60rhs").unwrap();
+        assert_eq!(n.n, "9q60y60rht");
+        assert_eq!(n.ne, "9q60y60rhv");
+        assert_eq!(n.e, "9q60y60rhu");
+        assert_eq!(n.se, "9q60y60rhg");
+        assert_eq!(n.s, "9q60y60rhe");
+        assert_eq!(n.sw, "9q60y60rh7");
+        assert_eq!(n.w, "9q60y60rhk");
+        assert_eq!(n.nw, "9q60y60rhm");
+    }
+
+    #[test]
+    fn opposite_directions_return_to_the_origin() {
+        let origin = encode(SLO, 9).unwrap();
+        for (there, back) in [
+            (Direction::N, Direction::S),
+            (Direction::E, Direction::W),
+            (Direction::NE, Direction::SW),
+            (Direction::SE, Direction::NW),
+        ] {
+            let away = neighbor(&origin, there).unwrap();
+            assert_eq!(neighbor(&away, back).unwrap(), origin);
+        }
+    }
+
+    #[test]
+    fn neighbors_keep_the_precision_of_their_origin() {
+        for len in 1..=12 {
+            let origin = encode(SLO, len).unwrap();
+            let n = neighbors(&origin).unwrap();
+            for hash in [n.n, n.ne, n.e, n.se, n.s, n.sw, n.w, n.nw] {
+                assert_eq!(hash.len(), len);
+            }
+        }
+    }
+
+    #[test]
+    fn neighbors_wrap_across_the_antimeridian_and_the_poles() {
+        // Not asserting specific hashes here -- the point is that these do not
+        // error or produce a coordinate outside the valid range, which is what
+        // the firmware's nine-cell search would trip over.
+        for edge in [
+            Coord { x: 179.999, y: 0.0 },
+            Coord {
+                x: -179.999,
+                y: 0.0,
+            },
+            Coord { x: 0.0, y: 89.999 },
+            Coord { x: 0.0, y: -89.999 },
+        ] {
+            let origin = encode(edge, 7).unwrap();
+            let n = neighbors(&origin).expect("neighbours at the edge of the world");
+            for hash in [n.n, n.ne, n.e, n.se, n.s, n.sw, n.w, n.nw] {
+                assert_eq!(hash.len(), 7);
+                decode(&hash).expect("every neighbour decodes");
+            }
+        }
+    }
 }
